@@ -27,6 +27,9 @@ function AuthGate() {
     if (loading) return;
     const inAuth = segments[0] === undefined || segments[0] === "index" || segments[0] === "otp";
     const inProfileSetup = segments[0] === "profile-setup";
+    const inPublic = segments[0] === "share";
+
+    if (inPublic) return; // public shareable routes bypass auth
 
     if (!user) {
       if (!inAuth) router.replace("/");

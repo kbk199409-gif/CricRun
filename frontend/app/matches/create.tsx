@@ -85,7 +85,7 @@ export default function CreateMatch() {
       });
       if (r.ok) {
         const d = await r.json();
-        router.replace(`/matches/${d.match.match_id}/setup?side=a`);
+        router.replace(`/matches/${d.match.match_id}/toss`);
       }
     } catch {}
     setLoading(false);
@@ -144,7 +144,7 @@ export default function CreateMatch() {
             )}
 
             <Pressable testID="start-match-btn" style={styles.saveBtn} onPress={create} disabled={loading || !teamA || !teamB || chosenOvers < 1}>
-              {loading ? <ActivityIndicator color={colors.onBrandPrimary} /> : <Text style={styles.saveText}>Confirm & Set Openers</Text>}
+              {loading ? <ActivityIndicator color={colors.onBrandPrimary} /> : <Text style={styles.saveText}>Confirm & Do the Toss</Text>}
             </Pressable>
           </View>
           <View style={{ height: 32 + insets.bottom }} />

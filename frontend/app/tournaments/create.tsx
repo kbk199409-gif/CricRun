@@ -44,8 +44,22 @@ export default function CreateTournament() {
 
   const chosenOvers = customOvers ? parseInt(customOvers) || 0 : overs;
 
+  const parseDDMMYYYY = (s: string): string | null => {
+    const t = s.trim();
+    if (!t) return null;
+    const m = t.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    if (!m) return null; // invalid
+    const [_, dd, mm, yyyy] = m;
+    // Return ISO YYYY-MM-DD for backend
+    return `${yyyy}-${mm}-${dd}`;
+  };
+
   const save = async () => {
     if (!name.trim() || chosenOvers < 1) return;
+    const isoStart = startDate ? parseDDMMYYYY(startDate) : null;
+    const isoEnd = endDate ? parseDDMMYYYY(endDate) : null;
+    if (startDate && !isoStart) { alert("Start date must be DD/MM/YYYY"); return; }
+    if (endDate && !isoEnd) { alert("End date must be DD/MM/YYYY"); return; }
     setLoading(true);
     try {
       const r = await apiFetch("/api/tournaments", {
@@ -54,8 +68,8 @@ export default function CreateTournament() {
           name: name.trim(),
           location: loc.trim() || null,
           overs: chosenOvers,
-          start_date: startDate || null,
-          end_date: endDate || null,
+          start_date: isoStart,
+          end_date: isoEnd,
         }),
       });
       if (r.ok) {
@@ -85,11 +99,11 @@ export default function CreateTournament() {
             <View style={styles.row}>
               <View style={styles.half}>
                 <Text style={styles.label}>Start Date</Text>
-                <TextInput testID="trn-start-input" style={styles.input} placeholder="2026-03-01" placeholderTextColor={colors.muted} value={startDate} onChangeText={setStartDate} />
+                <TextInput testID="trn-start-input" style={styles.input} placeholder="DD/MM/YYYY" placeholderTextColor={colors.muted} value={startDate} onChangeText={setStartDate} />
               </View>
               <View style={styles.half}>
                 <Text style={styles.label}>End Date (optional)</Text>
-                <TextInput testID="trn-end-input" style={styles.input} placeholder="2026-03-15" placeholderTextColor={colors.muted} value={endDate} onChangeText={setEndDate} />
+                <TextInput testID="trn-end-input" style={styles.input} placeholder="DD/MM/YYYY" placeholderTextColor={colors.muted} value={endDate} onChangeText={setEndDate} />
               </View>
             </View>
 

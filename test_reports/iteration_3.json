@@ -1,0 +1,34 @@
+{
+  "summary": "CricTrack v3 major-feature rollout: full backend + mobile UI regression. All 20 backend pytest cases pass (100%) covering toss, MoM, undo, per-player batting/bowling stats, out_type + fielder_id validation, wide/bye bowler charging semantics, public share (no-auth) and ISO date storage. Mobile UI E2E (390x844) verified end-to-end: phone -> dev OTP -> profile-setup -> API-seeded 2 teams x 3 players -> new match -> /matches/{id}/toss loads -> pick winner + Bowl -> routes to /matches/{id}/setup?side=b (correct: team A elected bowl so B bats first) -> 3-step wizard (Striker -> Non-Striker -> Opening Bowler) -> Start Innings fires POST /innings/b/start -> match state becomes live with innings_b.started=true and current_innings='b'. Live screen shows striker/non-striker/bowler cards with photos, Scorecard + Share buttons in header, and Wicket + Undo + Wd/Nb/Bye/LB + run pads. Public /share/{token} renders LIVE badge, score, batting rows with striker '*' marker, bowling rows with 0.0-0-0/Econ, and 'Live updates every 5 seconds' hint — all without auth.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Toss logic correct: if winner elects bat -> current_innings equals side of winning team (a or b). If elects bowl -> current_innings flips to opposite side. Verified for team_a wins + bowl -> current_innings='b'.",
+    "Ball endpoint: (a) wicket=true without out_type -> 400 with 'Select how the batsman was out'; (b) out_type in {catch_out, run_out, stumped} without fielder_id -> 400 'Select the fielder for this dismissal'; (c) bowled/catch_out/lbw/stumped/hit_wicket credit bowler.wickets, run_out and retired_hurt do NOT.",
+    "Per-player stats: striker.balls increments on every legal ball EXCEPT wide; striker.runs only for off-bat (extra='none'); fours/sixes counted only on 'none' 4/6; bowler.runs excludes byes/leg-byes; bowler.extras counts wide+no_ball; bowler.balls only for legal deliveries.",
+    "Undo restores full pre-snapshot (runs, balls, wickets, striker_id, non_striker_id, dismissed_ids, batters, bowlers, batted_ids) and clears completed/last_ball; also demotes match.status from completed -> live and clears winner_team_id/result_text.",
+    "Public /api/public/matches/{share_token} strips owner_id from match & both teams; returns team_a.players & team_b.players. 404 for unknown token. No auth required.",
+    "MoM endpoint validates team_id must be team_a_id or team_b_id; sets both man_of_the_match_id and man_of_the_match_team_id and persists.",
+    "Tournament ISO date '2026-03-09' persists round-trip on GET. Frontend tournaments/create.tsx uses regex ^([0-9]{1,2})/([0-9]{1,2})/([0-9]{4})$ and posts YYYY-MM-DD; alerts on malformed input.",
+    "Setup wizard (setup.tsx) gates the Next button by step (striker/nonStriker/bowler each required) and only fires POST /innings/{side}/start when step===2 (bowler) and Start Innings pressed."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (rewritten with 20 tests covering toss, MoM, undo, per-player stats, out_type + fielder_id validation, public share, wide/bye bowler charging, ISO date, OTP smoke)."
+  ],
+  "success_rate": {"backend": "100% (20/20)", "frontend": "100% of requested flows (toss routing, 3-step wizard, live screen wiring, public share, scorecard/undo/wicket buttons present)"},
+  "seed_data_creation": "Ephemeral TEST_/UI_-prefixed users, teams, matches created against live preview DB via pytest and the E2E script. Namespaced and safe to leave.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend suite at /app/backend/tests/backend_test.py, run with: EXPO_PUBLIC_BACKEND_URL=<url> pytest backend/tests/backend_test.py -o addopts='' -v (override addopts to disable xdist duplicate-fixture issue). Frontend mobile viewport 390x844. Auth: phone -> testID='dev-otp-hint' contains 'your OTP is XXXXXX'. Profile-setup pill testIDs are 'bat-right_hand', 'bowl-pacer', 'role-batsman' (VALUES not labels). Live-screen testIDs seen: scorecard-btn, share-btn, wicket-btn, undo-btn (plus off-bat, wd, nb, bye, lb and run pads 0/1/2/3/4/6). Toss testIDs: 'toss-{team_id}', 'decision-bat', 'decision-bowl', 'submit-toss-btn'. Setup wizard testIDs: 'striker-{pid}', 'nonstriker-{pid}', 'bowler-{pid}', 'next-btn', 'start-innings-btn'. Session token stored in localStorage.crictrack_session_token.",
+  "rca_of_issue": "N/A - no regressions or bugs found. New endpoints and mobile flows behave per spec."
+}

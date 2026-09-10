@@ -117,14 +117,24 @@ class InningsStart(BaseModel):
     non_striker_id: str
     bowler_id: str         # player_id from bowling team
 
+class TossPayload(BaseModel):
+    toss_winner_team_id: str
+    decision: Literal["bat", "bowl"]
+
+class MoMPayload(BaseModel):
+    player_id: str
+    team_id: str
+
 class BallInput(BaseModel):
-    runs: int = 0                            # off the bat OR added to team via bye/lb; base for wide/nb
+    runs: int = 0
     extra_type: Literal["none","wide","no_ball","bye","leg_bye"] = "none"
     wicket: bool = False
-    out_batsman_id: Optional[str] = None     # if omitted, striker is out
-    new_batsman_id: Optional[str] = None     # required when innings needs_new_batsman
-    new_bowler_id: Optional[str] = None      # required when innings needs_new_bowler
-    swap_strike: bool = False                # for end-of-over placement override (rare)
+    out_type: Optional[Literal["bowled","catch_out","run_out","lbw","stumped","hit_wicket","retired_hurt"]] = None
+    out_batsman_id: Optional[str] = None
+    fielder_id: Optional[str] = None
+    new_batsman_id: Optional[str] = None
+    new_bowler_id: Optional[str] = None
+    swap_strike: bool = False
 
 
 # ============ AUTH HELPERS ============
@@ -533,12 +543,31 @@ def _blank_innings() -> dict:
         "runs": 0, "wickets": 0, "balls": 0,
         "started": False, "completed": False,
         "striker_id": None, "non_striker_id": None, "bowler_id": None,
-        "batted_ids": [],           # all players who came on strike (for scorecard)
+        "batted_ids": [],
         "dismissed_ids": [],
         "needs_new_batsman": False,
         "needs_new_bowler": False,
         "last_ball": None,
+        "events": [],                # ball-by-ball log for undo & scorecard
+        "batters": {},               # player_id -> {runs, balls, fours, sixes, out_type, out_by, fielder_id}
+        "bowlers": {},               # player_id -> {balls, runs, wickets, extras}
     }
+
+
+def _ensure_batter(innings: dict, pid: str) -> dict:
+    b = innings["batters"].get(pid)
+    if not b:
+        b = {"runs": 0, "balls": 0, "fours": 0, "sixes": 0, "out_type": None, "out_by": None, "fielder_id": None}
+        innings["batters"][pid] = b
+    return b
+
+
+def _ensure_bowler(innings: dict, pid: str) -> dict:
+    b = innings["bowlers"].get(pid)
+    if not b:
+        b = {"balls": 0, "runs": 0, "wickets": 0, "extras": 0}
+        innings["bowlers"][pid] = b
+    return b
 
 
 @api_router.post("/matches")
@@ -553,6 +582,7 @@ async def create_match(payload: MatchCreate, authorization: Optional[str] = Head
     match_id = f"mch_{uuid.uuid4().hex[:10]}"
     match = {
         "match_id": match_id,
+        "share_token": uuid.uuid4().hex[:16],
         "team_a_id": payload.team_a_id, "team_b_id": payload.team_b_id,
         "team_a_name": team_a["name"], "team_b_name": team_b["name"],
         "team_a_short": team_a["short_name"], "team_b_short": team_b["short_name"],
@@ -566,6 +596,10 @@ async def create_match(payload: MatchCreate, authorization: Optional[str] = Head
         "innings_b": _blank_innings(),
         "winner_team_id": None,
         "result_text": None,
+        "toss_winner_team_id": None,
+        "toss_decision": None,
+        "man_of_the_match_id": None,
+        "man_of_the_match_team_id": None,
         "created_at": datetime.now(timezone.utc),
     }
     await db.matches.insert_one(match.copy())
@@ -643,6 +677,106 @@ async def start_innings(match_id: str, side: str, payload: InningsStart, authori
     return {"match": await db.matches.find_one({"match_id": match_id}, {"_id": 0})}
 
 
+@api_router.post("/matches/{match_id}/toss")
+async def set_toss(match_id: str, payload: TossPayload, authorization: Optional[str] = Header(None)):
+    user = await get_user_from_token(authorization)
+    m = await _get_owner_match(match_id, user["user_id"])
+    if payload.toss_winner_team_id not in (m["team_a_id"], m["team_b_id"]):
+        raise HTTPException(status_code=400, detail="Toss winner must be one of the match teams")
+    winner_bats = (payload.decision == "bat")
+    # If toss winner elects to bat → they bat first. Else they bowl → the other team bats first.
+    bats_first_team = payload.toss_winner_team_id if winner_bats else (m["team_b_id"] if payload.toss_winner_team_id == m["team_a_id"] else m["team_a_id"])
+    # Set current_innings so side "a" always refers to team_a_id; if team_b_id bats first we flip current_innings to "b"
+    current_innings = "a" if bats_first_team == m["team_a_id"] else "b"
+    await db.matches.update_one({"match_id": match_id}, {"$set": {
+        "toss_winner_team_id": payload.toss_winner_team_id,
+        "toss_decision": payload.decision,
+        "current_innings": current_innings,
+    }})
+    return {"match": await db.matches.find_one({"match_id": match_id}, {"_id": 0})}
+
+
+@api_router.post("/matches/{match_id}/mom")
+async def set_mom(match_id: str, payload: MoMPayload, authorization: Optional[str] = Header(None)):
+    user = await get_user_from_token(authorization)
+    m = await _get_owner_match(match_id, user["user_id"])
+    if payload.team_id not in (m["team_a_id"], m["team_b_id"]):
+        raise HTTPException(status_code=400, detail="Team must belong to the match")
+    await db.matches.update_one({"match_id": match_id}, {"$set": {
+        "man_of_the_match_id": payload.player_id,
+        "man_of_the_match_team_id": payload.team_id,
+    }})
+    return {"match": await db.matches.find_one({"match_id": match_id}, {"_id": 0})}
+
+
+def _apply_ball_effects(innings: dict, ball: dict) -> None:
+    """Apply the ball to innings state (idempotently for a fresh ball).
+    Mutates `innings`. Ball dict must already have final values for extra/runs/wicket."""
+    extra = ball["extra_type"]
+    runs = int(ball["runs"] or 0)
+    legal = extra not in ("wide", "no_ball")
+    team_runs = runs + (1 if extra in ("wide", "no_ball") else 0)
+    striker_id = innings.get("striker_id")
+    bowler_id = innings.get("bowler_id")
+
+    # Team score
+    innings["runs"] = int(innings["runs"]) + team_runs
+
+    # Batter stats — striker faces the ball (except wides)
+    if striker_id and extra != "wide":
+        bat = _ensure_batter(innings, striker_id)
+        bat["balls"] += 1
+        if extra == "none":
+            bat["runs"] += runs
+            if runs == 4: bat["fours"] += 1
+            elif runs == 6: bat["sixes"] += 1
+
+    # Bowler stats
+    if bowler_id:
+        bw = _ensure_bowler(innings, bowler_id)
+        if legal:
+            bw["balls"] += 1
+        # Runs charged to bowler: off bat, wide, no-ball (NOT byes/leg-byes)
+        if extra == "none":
+            bw["runs"] += runs
+        elif extra in ("wide", "no_ball"):
+            bw["runs"] += team_runs
+            bw["extras"] += team_runs
+
+    # Wicket
+    if ball.get("wicket"):
+        out_id = ball.get("out_batsman_id") or striker_id
+        out_type = ball.get("out_type") or "bowled"
+        innings["wickets"] = int(innings["wickets"]) + 1
+        if out_id and out_id not in innings["dismissed_ids"]:
+            innings["dismissed_ids"].append(out_id)
+        # Mark batter as out
+        if out_id:
+            bat = _ensure_batter(innings, out_id)
+            bat["out_type"] = out_type
+            bat["out_by"] = bowler_id if out_type in ("bowled","catch_out","lbw","stumped","hit_wicket") else None
+            bat["fielder_id"] = ball.get("fielder_id")
+        # Credit bowler for eligible dismissals
+        if bowler_id and out_type in ("bowled","catch_out","lbw","stumped","hit_wicket"):
+            bw = _ensure_bowler(innings, bowler_id)
+            bw["wickets"] += 1
+        # Clear crease slot
+        if out_id == innings.get("striker_id"):
+            innings["striker_id"] = None
+        elif out_id == innings.get("non_striker_id"):
+            innings["non_striker_id"] = None
+        innings["needs_new_batsman"] = True
+
+    # Legal ball counter for over progress
+    if legal:
+        innings["balls"] = int(innings["balls"]) + 1
+
+
+def _rotate_strike(innings: dict) -> None:
+    if innings.get("striker_id") and innings.get("non_striker_id"):
+        innings["striker_id"], innings["non_striker_id"] = innings["non_striker_id"], innings["striker_id"]
+
+
 @api_router.post("/matches/{match_id}/innings/{side}/ball")
 async def record_ball(match_id: str, side: str, payload: BallInput, authorization: Optional[str] = Header(None)):
     if side not in ("a", "b"):
@@ -665,7 +799,19 @@ async def record_ball(match_id: str, side: str, payload: BallInput, authorizatio
     bat_players = await _team_player_ids(bat_team)
     bowl_players = await _team_player_ids(bowl_team)
 
-    # Handle new batsman if pending (from previous wicket)
+    # Snapshot pre-state for undo BEFORE any mutation
+    pre_state = {
+        "runs": innings["runs"], "wickets": innings["wickets"], "balls": innings["balls"],
+        "striker_id": innings.get("striker_id"), "non_striker_id": innings.get("non_striker_id"), "bowler_id": innings.get("bowler_id"),
+        "needs_new_batsman": innings.get("needs_new_batsman", False),
+        "needs_new_bowler": innings.get("needs_new_bowler", False),
+        "dismissed_ids": list(innings.get("dismissed_ids", [])),
+        "batters": {k: dict(v) for k, v in innings.get("batters", {}).items()},
+        "bowlers": {k: dict(v) for k, v in innings.get("bowlers", {}).items()},
+        "batted_ids": list(innings.get("batted_ids", [])),
+    }
+
+    # Handle new batsman if pending
     if innings.get("needs_new_batsman"):
         if not payload.new_batsman_id:
             raise HTTPException(status_code=400, detail="Select the new batsman first")
@@ -675,7 +821,6 @@ async def record_ball(match_id: str, side: str, payload: BallInput, authorizatio
             raise HTTPException(status_code=400, detail="This batsman is already out")
         if payload.new_batsman_id in (innings.get("striker_id"), innings.get("non_striker_id")):
             raise HTTPException(status_code=400, detail="This batsman is already at the crease")
-        # The dismissed batsman's slot is empty (we cleared it when wicket happened).
         if innings.get("striker_id") is None:
             innings["striker_id"] = payload.new_batsman_id
         else:
@@ -684,113 +829,132 @@ async def record_ball(match_id: str, side: str, payload: BallInput, authorizatio
             innings["batted_ids"].append(payload.new_batsman_id)
         innings["needs_new_batsman"] = False
 
-    # Handle new bowler if pending (end of over)
+    # Handle new bowler if pending
     if innings.get("needs_new_bowler"):
         if not payload.new_bowler_id:
             raise HTTPException(status_code=400, detail="Select the next over's bowler first")
         if payload.new_bowler_id not in bowl_players:
             raise HTTPException(status_code=400, detail="Bowler must be from bowling team")
-        # (Rule: same bowler can't bowl consecutive overs, but we don't enforce that here.)
         innings["bowler_id"] = payload.new_bowler_id
         innings["needs_new_bowler"] = False
 
-    # Now record the ball.
     extra = payload.extra_type or "none"
     runs = max(0, int(payload.runs or 0))
-    legal = extra not in ("wide", "no_ball")
 
-    # Team runs accounting
-    team_runs = runs
-    if extra == "wide" or extra == "no_ball":
-        team_runs = runs + 1  # 1 extra for the wide/no-ball itself + any additional runs
-
-    innings["runs"] = int(innings["runs"]) + team_runs
-
-    # Strike rotation on odd runs (runs off the bat, bye, or leg-bye)
-    rotate = False
-    if extra in ("none", "bye", "leg_bye"):
-        rotate = (runs % 2 == 1)
-    # No strike rotation for wide/no-ball unless additional runs are odd
-    if extra in ("wide", "no_ball"):
-        rotate = (runs % 2 == 1)
-
-    # Wicket handling
-    dismissed_now = None
+    # Validate dismissal
     if payload.wicket:
-        # Ignore wickets on no-ball (only run-out is possible, but keep simple: reject)
         if extra == "no_ball":
             raise HTTPException(status_code=400, detail="Wicket cannot be recorded on a no-ball in this app")
-        innings["wickets"] = int(innings["wickets"]) + 1
-        out_id = payload.out_batsman_id or innings.get("striker_id")
-        dismissed_now = out_id
-        if out_id and out_id not in innings["dismissed_ids"]:
-            innings["dismissed_ids"].append(out_id)
-        # Clear the dismissed slot
-        if out_id == innings.get("striker_id"):
-            innings["striker_id"] = None
-        elif out_id == innings.get("non_striker_id"):
-            innings["non_striker_id"] = None
-        innings["needs_new_batsman"] = True
+        if payload.out_type is None:
+            raise HTTPException(status_code=400, detail="Select how the batsman was out")
+        if payload.out_type in ("catch_out","run_out","stumped") and not payload.fielder_id:
+            raise HTTPException(status_code=400, detail="Select the fielder for this dismissal")
 
-    # Increment legal balls
-    if legal:
-        innings["balls"] = int(innings["balls"]) + 1
-
-    innings["last_ball"] = {
+    ball = {
         "runs": runs, "extra_type": extra, "wicket": bool(payload.wicket),
-        "team_runs": team_runs, "dismissed": dismissed_now, "legal": legal,
+        "out_type": payload.out_type,
+        "out_batsman_id": payload.out_batsman_id or innings.get("striker_id"),
+        "fielder_id": payload.fielder_id,
         "at": datetime.now(timezone.utc).isoformat(),
+        "pre": pre_state,
+        "striker_at_ball": innings.get("striker_id"),
+        "non_striker_at_ball": innings.get("non_striker_id"),
+        "bowler_at_ball": innings.get("bowler_id"),
     }
 
-    # End of over: swap strike, ask for new bowler
+    _apply_ball_effects(innings, ball)
+
+    # Determine strike rotation & over end
+    legal = extra not in ("wide", "no_ball")
+    rotate_on_runs = (runs % 2 == 1)  # for all extras: bye/lb/none/wide/nb — odd runs rotate strike
+
+    # Over end swap first, then rotate-on-runs to keep semantics of "run then over".
     if legal and innings["balls"] % 6 == 0 and innings["balls"] < max_balls:
-        if innings.get("striker_id") and innings.get("non_striker_id"):
-            innings["striker_id"], innings["non_striker_id"] = innings["non_striker_id"], innings["striker_id"]
+        _rotate_strike(innings)
         innings["needs_new_bowler"] = True
 
-    # Strike rotation on runs (BEFORE any over-end swap? Standard cricket: rotate on run then over-end swap.)
-    # Simplification: apply rotate after runs, and then over-end swap already handled above.
-    if rotate and not payload.wicket and innings.get("striker_id") and innings.get("non_striker_id"):
-        innings["striker_id"], innings["non_striker_id"] = innings["non_striker_id"], innings["striker_id"]
+    if rotate_on_runs and not payload.wicket:
+        _rotate_strike(innings)
 
-    if payload.swap_strike and innings.get("striker_id") and innings.get("non_striker_id"):
-        innings["striker_id"], innings["non_striker_id"] = innings["non_striker_id"], innings["striker_id"]
+    if payload.swap_strike:
+        _rotate_strike(innings)
 
     # End innings conditions
     all_out = innings["wickets"] >= 10
     overs_done = innings["balls"] >= max_balls
-    target = None
     if side == "b":
-        target = int(match["innings_a"]["runs"]) + 1
-        if innings["runs"] >= target:
+        # Target reached (chase completed)
+        # Note: side "b" here means innings_b, but the actual chasing side depends on toss.
+        # We compute target from the OTHER innings.
+        other_runs = match["innings_a"]["runs"]
+        if innings["runs"] > other_runs:
             innings["completed"] = True
-
+    else:
+        # side "a": 2nd innings might be innings_a in tosses where B batted first.
+        # Symmetric: if other innings is completed, check target.
+        other = match["innings_b"]
+        if other.get("completed") and other.get("started"):
+            if innings["runs"] > int(other["runs"]):
+                innings["completed"] = True
     if all_out or overs_done:
         innings["completed"] = True
 
+    innings["last_ball"] = {k: ball[k] for k in ("runs","extra_type","wicket","out_type","fielder_id","at")}
+    innings["events"].append(ball)
+
     updates = {field: innings}
 
-    # If innings completed & match should complete
-    if innings["completed"]:
-        if side == "a":
-            # Move to 2nd innings (still 'live' but next side needs a start)
-            updates["current_innings"] = "b"
-        else:
-            # Match complete
-            ra = match["innings_a"]["runs"]
-            rb = innings["runs"]
-            winner = None; text = "Match Tied"
-            if ra > rb:
-                winner = match["team_a_id"]
-                text = f"{match['team_a_name']} won by {ra - rb} runs"
-            elif rb > ra:
-                winner = match["team_b_id"]
-                wkts_left = 10 - int(innings["wickets"])
-                text = f"{match['team_b_name']} won by {wkts_left} wickets"
-            updates["status"] = "completed"
-            updates["winner_team_id"] = winner
-            updates["result_text"] = text
+    # Match completion: complete when BOTH innings completed (or the chasing side completed win)
+    other_field = "innings_b" if field == "innings_a" else "innings_a"
+    other_innings = match[other_field]
+    if innings["completed"] and other_innings.get("started") and other_innings.get("completed"):
+        # Match ends
+        ra = match["innings_a"]["runs"] if field != "innings_a" else innings["runs"]
+        rb = match["innings_b"]["runs"] if field != "innings_b" else innings["runs"]
+        team_a_runs = ra; team_b_runs = rb
+        winner = None; text = "Match Tied"
+        if team_a_runs > team_b_runs:
+            winner = match["team_a_id"]
+            text = f"{match['team_a_name']} won by {team_a_runs - team_b_runs} runs"
+        elif team_b_runs > team_a_runs:
+            winner = match["team_b_id"]
+            wkts_left = 10 - int(innings["wickets"] if field == "innings_b" else other_innings.get("wickets", 0))
+            text = f"{match['team_b_name']} won by {wkts_left} wickets"
+        updates["status"] = "completed"
+        updates["winner_team_id"] = winner
+        updates["result_text"] = text
+    elif innings["completed"] and not other_innings.get("started"):
+        # First innings just completed — flip current_innings to the other side
+        updates["current_innings"] = "b" if field == "innings_a" else "a"
 
+    await db.matches.update_one({"match_id": match_id}, {"$set": updates})
+    return {"match": await db.matches.find_one({"match_id": match_id}, {"_id": 0})}
+
+
+@api_router.post("/matches/{match_id}/innings/{side}/undo")
+async def undo_ball(match_id: str, side: str, authorization: Optional[str] = Header(None)):
+    if side not in ("a", "b"):
+        raise HTTPException(status_code=400, detail="Invalid side")
+    user = await get_user_from_token(authorization)
+    match = await _get_owner_match(match_id, user["user_id"])
+    field = "innings_a" if side == "a" else "innings_b"
+    innings = match[field]
+    if not innings.get("events"):
+        raise HTTPException(status_code=400, detail="Nothing to undo")
+    last = innings["events"].pop()
+    pre = last.get("pre") or {}
+    # Restore state from snapshot
+    for k in ("runs", "wickets", "balls", "striker_id", "non_striker_id", "bowler_id",
+              "needs_new_batsman", "needs_new_bowler", "dismissed_ids", "batters", "bowlers", "batted_ids"):
+        if k in pre:
+            innings[k] = pre[k]
+    innings["completed"] = False
+    innings["last_ball"] = None
+    updates = {field: innings, "status": "live"}
+    # If match was completed by this ball, revert.
+    if match.get("status") == "completed":
+        updates["winner_team_id"] = None
+        updates["result_text"] = None
     await db.matches.update_one({"match_id": match_id}, {"$set": updates})
     return {"match": await db.matches.find_one({"match_id": match_id}, {"_id": 0})}
 
@@ -807,6 +971,27 @@ async def complete_match(match_id: str, authorization: Optional[str] = Header(No
     else: winner = None; text = "Match Tied"
     await db.matches.update_one({"match_id": match_id}, {"$set": {"status": "completed", "winner_team_id": winner, "result_text": text}})
     return {"match": await db.matches.find_one({"match_id": match_id}, {"_id": 0})}
+
+
+# ============ PUBLIC / SHARE ============
+@api_router.get("/public/matches/{share_token}")
+async def public_match(share_token: str):
+    """No-auth match viewer for share links. Returns match + team players."""
+    m = await db.matches.find_one({"share_token": share_token}, {"_id": 0, "owner_id": 0})
+    if not m:
+        raise HTTPException(status_code=404, detail="Match not found")
+    team_a = await db.teams.find_one({"team_id": m["team_a_id"]}, {"_id": 0, "owner_id": 0})
+    team_b = await db.teams.find_one({"team_id": m["team_b_id"]}, {"_id": 0, "owner_id": 0})
+    return {"match": m, "team_a": team_a, "team_b": team_b}
+
+
+@api_router.get("/public/files/{path:path}")
+async def public_file(path: str):
+    """No-auth image proxy — only images inside the app namespace are exposed."""
+    if not path.startswith(f"{APP_NAME}/"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    content, ct = await run_in_threadpool(get_object, path)
+    return Response(content=content, media_type=ct)
 
 
 # ============ ROOT ============

@@ -1,84 +1,117 @@
-import { View, Text, Pressable, ScrollView, ActivityIndicator, Modal } from "react-native";
+import { View, Text, Pressable, ScrollView, ActivityIndicator, Modal, Image, Platform } from "react-native";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Ionicons from "@react-native-vector-icons/ionicons";
 import * as Haptics from "expo-haptics";
+import * as Clipboard from "expo-clipboard";
 import { makeStyles, useTheme } from "@/src/theme";
-import { useAuth } from "@/src/auth";
+import { useAuth, fileUrl } from "@/src/auth";
 
 const useStyles = makeStyles((c) => ({
   root: { flex: 1, backgroundColor: c.surface },
-  headerRow: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingTop: 4, paddingBottom: 8, borderBottomWidth: 1, borderBottomColor: c.border },
+  headerRow: { flexDirection: "row", alignItems: "center", paddingHorizontal: 8, paddingTop: 4, paddingBottom: 8, borderBottomWidth: 1, borderBottomColor: c.border },
   hbtn: { padding: 6 },
-  htitle: { flex: 1, textAlign: "center", fontSize: 16, fontWeight: "700", color: c.onSurface },
-  scoreboard: { backgroundColor: c.surfaceInverse, padding: 20 },
-  liveTag: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", backgroundColor: "#FFFFFF20", paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999, marginBottom: 8 },
+  hbtnIcon: { padding: 6, marginHorizontal: 2 },
+  htitle: { flex: 1, textAlign: "center", fontSize: 15, fontWeight: "700", color: c.onSurface },
+  scoreboard: { backgroundColor: c.surfaceInverse, padding: 16 },
+  liveTag: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", backgroundColor: "#FFFFFF20", paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999, marginBottom: 6 },
   liveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "#EF4444", marginRight: 6 },
   liveText: { color: "#FFFFFF", fontSize: 11, fontWeight: "700", letterSpacing: 0.5 },
-  battingLbl: { color: "#94A3B8", fontSize: 12, fontWeight: "600", textTransform: "uppercase", letterSpacing: 0.5 },
-  battingTeam: { color: "#FFFFFF", fontSize: 24, fontWeight: "800", marginTop: 2 },
-  bigScore: { color: "#FFFFFF", fontSize: 56, fontWeight: "800", letterSpacing: -2, marginTop: 4 },
-  scoreMeta: { flexDirection: "row", gap: 24, marginTop: 4 },
-  metaBlock: {},
-  metaLbl: { color: "#94A3B8", fontSize: 11, fontWeight: "600", textTransform: "uppercase", letterSpacing: 0.5 },
-  metaVal: { color: "#FFFFFF", fontSize: 18, fontWeight: "700" },
-  chase: { color: "#FBBF24", fontSize: 13, marginTop: 10, fontWeight: "700" },
-  result: { color: "#4ADE80", fontSize: 14, marginTop: 10, fontWeight: "800" },
+  battingLbl: { color: "#94A3B8", fontSize: 11, fontWeight: "600", textTransform: "uppercase", letterSpacing: 0.5 },
+  battingTeam: { color: "#FFFFFF", fontSize: 20, fontWeight: "800", marginTop: 2 },
+  bigScore: { color: "#FFFFFF", fontSize: 46, fontWeight: "800", letterSpacing: -1.5, marginTop: 4 },
+  scoreMeta: { flexDirection: "row", gap: 20, marginTop: 4 },
+  metaLbl: { color: "#94A3B8", fontSize: 10, fontWeight: "600", textTransform: "uppercase", letterSpacing: 0.5 },
+  metaVal: { color: "#FFFFFF", fontSize: 16, fontWeight: "700" },
+  chase: { color: "#FBBF24", fontSize: 12, marginTop: 8, fontWeight: "700" },
+  result: { color: "#4ADE80", fontSize: 14, marginTop: 8, fontWeight: "800" },
+  toss: { color: "#94A3B8", fontSize: 11, marginTop: 6 },
 
   playersRow: { flexDirection: "row", backgroundColor: c.surfaceSecondary, borderBottomWidth: 1, borderBottomColor: c.border },
-  playerBox: { flex: 1, padding: 12, alignItems: "center" },
+  playerBox: { flex: 1, padding: 10, alignItems: "center", flexDirection: "row", gap: 8, justifyContent: "center" },
   playerBoxActive: { backgroundColor: c.brandTertiary },
-  playerLbl: { fontSize: 10, color: c.muted, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.5 },
-  playerName: { fontSize: 14, color: c.onSurface, fontWeight: "700", marginTop: 4 },
+  playerAvatar: { width: 28, height: 28, borderRadius: 999, backgroundColor: c.brandTertiary, alignItems: "center", justifyContent: "center", overflow: "hidden" },
+  playerAvatarImg: { width: 28, height: 28, borderRadius: 999 },
+  playerAvatarText: { color: c.onBrandTertiary, fontWeight: "700", fontSize: 12 },
+  playerBoxCol: { flex: 1 },
+  playerLbl: { fontSize: 9, color: c.muted, fontWeight: "700", textTransform: "uppercase" },
+  playerName: { fontSize: 12, color: c.onSurface, fontWeight: "700" },
+  playerStat: { fontSize: 10, color: c.muted },
 
-  needsBanner: { backgroundColor: c.warning, paddingVertical: 12, paddingHorizontal: 16, flexDirection: "row", alignItems: "center", gap: 10 },
-  needsText: { color: c.onWarning, fontWeight: "700", flex: 1 },
+  needsBanner: { backgroundColor: c.warning, paddingVertical: 10, paddingHorizontal: 14, flexDirection: "row", alignItems: "center", gap: 8 },
+  needsText: { color: c.onWarning, fontWeight: "700", flex: 1, fontSize: 13 },
   needsBtn: { backgroundColor: c.surface, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6 },
   needsBtnText: { color: c.onWarning, fontWeight: "700", fontSize: 12 },
 
-  extrasRow: { flexDirection: "row", padding: 12, gap: 8, backgroundColor: c.surfaceSecondary },
+  extrasRow: { flexDirection: "row", padding: 10, gap: 6, backgroundColor: c.surfaceSecondary },
   extraChip: { flex: 1, paddingVertical: 8, borderRadius: 999, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface, alignItems: "center" },
   extraChipActive: { borderColor: c.brandPrimary, backgroundColor: c.brandTertiary },
-  extraText: { fontSize: 12, fontWeight: "700", color: c.onSurfaceTertiary },
+  extraText: { fontSize: 11, fontWeight: "700", color: c.onSurfaceTertiary },
   extraTextActive: { color: c.onBrandTertiary },
 
-  runsGrid: { flexDirection: "row", flexWrap: "wrap", padding: 12, gap: 10, justifyContent: "space-between" },
-  runBtn: { width: "30%", aspectRatio: 1.6, borderRadius: 14, alignItems: "center", justifyContent: "center", backgroundColor: c.surfaceTertiary, borderWidth: 1, borderColor: c.border },
+  runsGrid: { flexDirection: "row", flexWrap: "wrap", padding: 10, gap: 8, justifyContent: "space-between" },
+  runBtn: { width: "30%", aspectRatio: 1.7, borderRadius: 12, alignItems: "center", justifyContent: "center", backgroundColor: c.surfaceTertiary, borderWidth: 1, borderColor: c.border },
   runBtnPrimary: { backgroundColor: c.brandPrimary, borderColor: c.brandPrimary },
-  runBtnDanger: { backgroundColor: c.error, borderColor: c.error },
-  runText: { fontSize: 26, fontWeight: "800", color: c.onSurface },
+  runText: { fontSize: 24, fontWeight: "800", color: c.onSurface },
   runTextInv: { color: "#FFFFFF" },
   runLbl: { fontSize: 10, color: c.muted, fontWeight: "700", marginTop: 2 },
   runLblInv: { color: "#FFFFFF" },
-  actionBar: { flexDirection: "row", paddingHorizontal: 12, gap: 10, marginTop: 4 },
+  actionBar: { flexDirection: "row", paddingHorizontal: 10, gap: 8 },
   wicketBtn: { flex: 1, backgroundColor: c.error, borderRadius: 12, paddingVertical: 14, alignItems: "center" },
-  wicketText: { color: c.onError, fontWeight: "800", fontSize: 16 },
-  swapBtn: { paddingHorizontal: 16, backgroundColor: c.surfaceTertiary, borderRadius: 12, borderWidth: 1, borderColor: c.border, alignItems: "center", justifyContent: "center" },
+  wicketText: { color: c.onError, fontWeight: "800", fontSize: 14 },
+  undoBtn: { paddingHorizontal: 14, backgroundColor: c.surfaceTertiary, borderRadius: 12, borderWidth: 1, borderColor: c.border, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 4 },
+  swapBtn: { paddingHorizontal: 14, backgroundColor: c.surfaceTertiary, borderRadius: 12, borderWidth: 1, borderColor: c.border, alignItems: "center", justifyContent: "center" },
+  undoText: { color: c.onSurface, fontWeight: "700", fontSize: 12 },
 
-  completedCard: { margin: 16, backgroundColor: c.brandTertiary, borderRadius: 14, padding: 20, alignItems: "center" },
+  completedCard: { margin: 14, backgroundColor: c.brandTertiary, borderRadius: 14, padding: 20, alignItems: "center" },
   completedTitle: { fontSize: 22, fontWeight: "800", color: c.onBrandTertiary },
   completedSub: { fontSize: 14, color: c.onBrandTertiary, marginTop: 4, textAlign: "center" },
-  primaryBtn: { backgroundColor: c.brandPrimary, borderRadius: 12, paddingVertical: 14, alignItems: "center", marginHorizontal: 16, marginTop: 12 },
+  primaryBtn: { backgroundColor: c.brandPrimary, borderRadius: 12, paddingVertical: 14, alignItems: "center", marginHorizontal: 14, marginTop: 8 },
   primaryBtnText: { color: c.onBrandPrimary, fontWeight: "700", fontSize: 15 },
+  momCard: { flexDirection: "row", alignItems: "center", margin: 14, padding: 14, backgroundColor: c.surface, borderRadius: 14, borderWidth: 1, borderColor: c.border, gap: 12 },
+  momAvatar: { width: 54, height: 54, borderRadius: 999, backgroundColor: c.brandTertiary, alignItems: "center", justifyContent: "center", overflow: "hidden" },
+  momAvatarImg: { width: 54, height: 54, borderRadius: 999 },
+  momName: { color: c.onSurface, fontSize: 16, fontWeight: "800" },
+  momLbl: { color: c.warning, fontSize: 11, fontWeight: "700", letterSpacing: 0.5 },
+  momMeta: { color: c.muted, fontSize: 12, marginTop: 2 },
 
   modal: { flex: 1, backgroundColor: c.surface },
   modalHead: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingTop: 4, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: c.border },
   modalTitle: { flex: 1, textAlign: "center", fontSize: 17, fontWeight: "700", color: c.onSurface },
-  modalPlayer: { marginHorizontal: 16, marginBottom: 8, backgroundColor: c.surface, borderRadius: 12, padding: 14, borderWidth: 1.5, borderColor: c.border, flexDirection: "row", alignItems: "center", gap: 12 },
+  modalSub: { color: c.muted, textAlign: "center", padding: 10 },
+  modalPlayer: { marginHorizontal: 16, marginBottom: 8, backgroundColor: c.surface, borderRadius: 12, padding: 12, borderWidth: 1.5, borderColor: c.border, flexDirection: "row", alignItems: "center", gap: 12 },
   modalPlayerActive: { borderColor: c.brandPrimary, backgroundColor: c.brandTertiary },
-  modalAvatar: { width: 36, height: 36, borderRadius: 999, backgroundColor: c.brandTertiary, alignItems: "center", justifyContent: "center" },
+  modalAvatar: { width: 36, height: 36, borderRadius: 999, backgroundColor: c.brandTertiary, alignItems: "center", justifyContent: "center", overflow: "hidden" },
+  modalAvatarImg: { width: 36, height: 36, borderRadius: 999 },
   modalAvatarText: { color: c.onBrandTertiary, fontWeight: "700" },
   modalName: { flex: 1, color: c.onSurface, fontWeight: "600", fontSize: 15 },
   modalBtn: { backgroundColor: c.brandPrimary, borderRadius: 12, paddingVertical: 14, alignItems: "center", margin: 16 },
   modalBtnText: { color: c.onBrandPrimary, fontWeight: "700", fontSize: 15 },
+  disabled: { opacity: 0.5 },
+
+  outTypeGrid: { flexDirection: "row", flexWrap: "wrap", padding: 12, gap: 10 },
+  outTypeBtn: { width: "48%", padding: 14, borderRadius: 12, borderWidth: 1.5, borderColor: c.border, backgroundColor: c.surface, alignItems: "center" },
+  outTypeBtnActive: { borderColor: c.brandPrimary, backgroundColor: c.brandTertiary },
+  outTypeText: { color: c.onSurface, fontWeight: "700", fontSize: 14, marginTop: 6, textAlign: "center" },
+
+  shareBox: { padding: 16 },
+  shareText: { color: c.onSurface, fontSize: 14, marginBottom: 12 },
+  shareLink: { padding: 12, backgroundColor: c.surfaceTertiary, borderRadius: 10, marginBottom: 12 },
+  shareLinkText: { color: c.brandPrimary, fontWeight: "700" },
 }));
 
-function ballsToOversStr(balls: number): string {
-  const overs = Math.floor(balls / 6);
-  const rem = balls % 6;
-  return `${overs}.${rem}`;
-}
+const OUT_TYPES = [
+  { key: "bowled", label: "Bowled", icon: "flash-outline" },
+  { key: "catch_out", label: "Caught", icon: "hand-left-outline" },
+  { key: "run_out", label: "Run Out", icon: "walk-outline" },
+  { key: "lbw", label: "LBW", icon: "shield-outline" },
+  { key: "stumped", label: "Stumped", icon: "shield-half-outline" },
+  { key: "hit_wicket", label: "Hit Wicket", icon: "alert-circle-outline" },
+  { key: "retired_hurt", label: "Retired Hurt", icon: "bandage-outline" },
+];
+
+const OUT_NEEDS_FIELDER: Record<string, boolean> = { catch_out: true, run_out: true, stumped: true };
 
 export default function LiveMatch() {
   const styles = useStyles();
@@ -86,8 +119,10 @@ export default function LiveMatch() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { apiFetch } = useAuth();
+  const { apiFetch, token } = useAuth();
   const [match, setMatch] = useState<any>(null);
+  const [teamA, setTeamA] = useState<any>(null);
+  const [teamB, setTeamB] = useState<any>(null);
   const [batTeam, setBatTeam] = useState<any>(null);
   const [bowlTeam, setBowlTeam] = useState<any>(null);
   const [extra, setExtra] = useState<"none" | "wide" | "no_ball" | "bye" | "leg_bye">("none");
@@ -96,6 +131,19 @@ export default function LiveMatch() {
   const [showNewBowler, setShowNewBowler] = useState(false);
   const [pickedBatsman, setPickedBatsman] = useState<string>("");
   const [pickedBowler, setPickedBowler] = useState<string>("");
+  const [batsmanForNextBall, setBatsmanForNextBall] = useState<string>("");
+  const [bowlerForNextBall, setBowlerForNextBall] = useState<string>("");
+  // Wicket flow
+  const [showWicketType, setShowWicketType] = useState(false);
+  const [showFielder, setShowFielder] = useState(false);
+  const [pendingWicket, setPendingWicket] = useState<{ out_type: string; runs: number } | null>(null);
+  const [pickedFielder, setPickedFielder] = useState<string>("");
+  // MoM
+  const [showMoM, setShowMoM] = useState(false);
+  const [momTab, setMomTab] = useState<"a" | "b">("a");
+  const [pickedMoM, setPickedMoM] = useState<string>("");
+  // Share
+  const [showShare, setShowShare] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -105,33 +153,35 @@ export default function LiveMatch() {
       const m = d.match;
       setMatch(m);
       const cur = m.current_innings === "a" ? m.innings_a : m.innings_b;
-      const batId = m.current_innings === "a" ? m.team_a_id : m.team_b_id;
-      const bowlId = m.current_innings === "a" ? m.team_b_id : m.team_a_id;
-      const [rBat, rBowl] = await Promise.all([
-        apiFetch(`/api/teams/${batId}`),
-        apiFetch(`/api/teams/${bowlId}`),
-      ]);
-      if (rBat.ok) setBatTeam((await rBat.json()).team);
-      if (rBowl.ok) setBowlTeam((await rBowl.json()).team);
-      if (cur.needs_new_batsman) setShowNewBatsman(true);
-      if (cur.needs_new_bowler) setShowNewBowler(true);
+      const [rA, rB] = await Promise.all([apiFetch(`/api/teams/${m.team_a_id}`), apiFetch(`/api/teams/${m.team_b_id}`)]);
+      const tA = rA.ok ? (await rA.json()).team : null;
+      const tB = rB.ok ? (await rB.json()).team : null;
+      setTeamA(tA); setTeamB(tB);
+      if (m.current_innings === "a") { setBatTeam(tA); setBowlTeam(tB); }
+      else { setBatTeam(tB); setBowlTeam(tA); }
+      // Auto-open pickers when required
+      if (cur.needs_new_batsman && !batsmanForNextBall) setShowNewBatsman(true);
+      if (cur.needs_new_bowler && !bowlerForNextBall) setShowNewBowler(true);
+      // If a new innings needs to start, route to setup
+      if (m.status !== "completed") {
+        const nextInn = m.current_innings === "a" ? m.innings_a : m.innings_b;
+        if (!nextInn.started) router.replace(`/matches/${id}/setup?side=${m.current_innings}`);
+      }
     } catch {}
-  }, [apiFetch, id]);
+  }, [apiFetch, id, batsmanForNextBall, bowlerForNextBall, router]);
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  const curInn = useMemo(() => {
-    if (!match) return null;
-    return match.current_innings === "a" ? match.innings_a : match.innings_b;
-  }, [match]);
-  const otherInn = useMemo(() => {
-    if (!match) return null;
-    return match.current_innings === "a" ? match.innings_b : match.innings_a;
-  }, [match]);
+  const curInn = useMemo(() => (match ? (match.current_innings === "a" ? match.innings_a : match.innings_b) : null), [match]);
 
   const playerName = useCallback((pid: string | null) => {
     if (!pid) return "-";
     const all = [...(batTeam?.players || []), ...(bowlTeam?.players || [])];
     return all.find((p) => p.player_id === pid)?.name || "-";
+  }, [batTeam, bowlTeam]);
+  const playerObj = useCallback((pid: string | null) => {
+    if (!pid) return null;
+    const all = [...(batTeam?.players || []), ...(bowlTeam?.players || [])];
+    return all.find((p) => p.player_id === pid) || null;
   }, [batTeam, bowlTeam]);
 
   const sendBall = async (body: any) => {
@@ -139,24 +189,14 @@ export default function LiveMatch() {
     setSaving(true);
     try {
       Haptics.selectionAsync().catch(() => {});
+      const merged: any = { ...body };
+      if (batsmanForNextBall) merged.new_batsman_id = batsmanForNextBall;
+      if (bowlerForNextBall) merged.new_bowler_id = bowlerForNextBall;
       const r = await apiFetch(`/api/matches/${id}/innings/${match.current_innings}/ball`, {
-        method: "POST", body: JSON.stringify(body),
+        method: "POST", body: JSON.stringify(merged),
       });
       if (r.ok) {
-        const d = await r.json();
-        const m = d.match;
-        setMatch(m);
-        setExtra("none");
-        // If innings A just completed and match still live -> route to setup for B
-        if (m.status !== "completed") {
-          const nextInn = m.current_innings === "a" ? m.innings_a : m.innings_b;
-          if (!nextInn.started) {
-            router.replace(`/matches/${id}/setup?side=${m.current_innings}`);
-            return;
-          }
-          if (nextInn.needs_new_batsman) setShowNewBatsman(true);
-          if (nextInn.needs_new_bowler) setShowNewBowler(true);
-        }
+        setBatsmanForNextBall(""); setBowlerForNextBall(""); setExtra("none");
         await load();
       } else {
         const j = await r.json().catch(() => ({}));
@@ -166,47 +206,67 @@ export default function LiveMatch() {
     setSaving(false);
   };
 
+  const undo = async () => {
+    if (!match) return;
+    setSaving(true);
+    try {
+      const r = await apiFetch(`/api/matches/${id}/innings/${match.current_innings}/undo`, { method: "POST" });
+      if (r.ok) {
+        setBatsmanForNextBall(""); setBowlerForNextBall("");
+        await load();
+      } else {
+        const j = await r.json().catch(() => ({}));
+        alert(j.detail || "Nothing to undo");
+      }
+    } catch {}
+    setSaving(false);
+  };
+
   const runsButton = (n: number) => {
-    if (curInn?.needs_new_batsman || curInn?.needs_new_bowler) {
-      alert("Please select the required player first.");
-      return;
-    }
+    if (!curInn) return;
+    if (curInn.needs_new_batsman && !batsmanForNextBall) { alert("Select the new batsman first."); return; }
+    if (curInn.needs_new_bowler && !bowlerForNextBall) { alert("Select the next bowler first."); return; }
     sendBall({ runs: n, extra_type: extra, wicket: false });
   };
 
   const wicketButton = () => {
-    if (extra === "no_ball") { alert("Wicket cannot be recorded on a no-ball here"); return; }
-    if (curInn?.needs_new_bowler) { alert("Please select the next bowler first."); return; }
-    sendBall({ runs: 0, extra_type: extra, wicket: true });
+    if (!curInn) return;
+    if (extra === "no_ball") { alert("Wicket can't be recorded on a no-ball"); return; }
+    if (curInn.needs_new_bowler && !bowlerForNextBall) { alert("Select the next bowler first."); return; }
+    setPendingWicket({ out_type: "", runs: 0 });
+    setShowWicketType(true);
   };
 
-  const applyNewBatsman = async () => {
-    if (!pickedBatsman) return;
-    setShowNewBatsman(false);
-    // Record a placeholder request — but we haven't sent a ball yet; the new_batsman_id
-    // is applied on the next ball. Store it locally by sending an empty confirmation? We
-    // need to send it inline with the next ball. Instead: send it as part of the next
-    // ball input by keeping it in state.
-    setBatsmanForNextBall(pickedBatsman);
-    setPickedBatsman("");
-  };
-  const [batsmanForNextBall, setBatsmanForNextBall] = useState<string>("");
-  const [bowlerForNextBall, setBowlerForNextBall] = useState<string>("");
-
-  const applyNewBowler = () => {
-    if (!pickedBowler) return;
-    setBowlerForNextBall(pickedBowler);
-    setPickedBowler("");
-    setShowNewBowler(false);
+  const submitWicketWith = (out_type: string, fielder_id?: string) => {
+    const runs = pendingWicket?.runs ?? 0;
+    sendBall({ runs, extra_type: extra, wicket: true, out_type, fielder_id });
+    setPendingWicket(null); setPickedFielder(""); setShowFielder(false); setShowWicketType(false);
   };
 
-  const enhancedSendBall = async (body: any) => {
-    const merged: any = { ...body };
-    if (batsmanForNextBall) merged.new_batsman_id = batsmanForNextBall;
-    if (bowlerForNextBall) merged.new_bowler_id = bowlerForNextBall;
-    await sendBall(merged);
-    setBatsmanForNextBall("");
-    setBowlerForNextBall("");
+  const shareUrl = useMemo(() => {
+    if (!match?.share_token) return "";
+    if (Platform.OS === "web" && typeof window !== "undefined") {
+      return `${window.location.origin}/share/${match.share_token}`;
+    }
+    const base = process.env.EXPO_PUBLIC_BACKEND_URL || "";
+    return `${base}/share/${match.share_token}`;
+  }, [match]);
+
+  const copyShare = async () => {
+    if (!shareUrl) return;
+    try { await Clipboard.setStringAsync(shareUrl); alert("Link copied!"); } catch {}
+  };
+
+  const submitMoM = async () => {
+    if (!pickedMoM) return;
+    const teamId = momTab === "a" ? match.team_a_id : match.team_b_id;
+    setSaving(true);
+    try {
+      await apiFetch(`/api/matches/${id}/mom`, { method: "POST", body: JSON.stringify({ player_id: pickedMoM, team_id: teamId }) });
+      setShowMoM(false);
+      await load();
+    } catch {}
+    setSaving(false);
   };
 
   if (!match || !curInn) {
@@ -216,31 +276,43 @@ export default function LiveMatch() {
   const maxBalls = match.overs * 6;
   const battingName = match.current_innings === "a" ? match.team_a_name : match.team_b_name;
   const isCompleted = match.status === "completed";
-  const oversStr = ballsToOversStr(curInn.balls);
+  const oversStr = `${Math.floor(curInn.balls / 6)}.${curInn.balls % 6}`;
   const runRate = curInn.balls > 0 ? ((curInn.runs / (curInn.balls / 6)) || 0).toFixed(2) : "0.00";
-
+  const otherInn = match.current_innings === "a" ? match.innings_b : match.innings_a;
   let chaseInfo = "";
-  if (match.current_innings === "b" && otherInn) {
+  if (otherInn?.started && otherInn?.completed) {
     const target = otherInn.runs + 1;
     const need = target - curInn.runs;
     const ballsLeft = maxBalls - curInn.balls;
-    if (need > 0) chaseInfo = `Need ${need} runs in ${ballsLeft} balls (target ${target})`;
+    if (need > 0) chaseInfo = `Need ${need} in ${ballsLeft} balls (target ${target})`;
   }
 
   const bat = batTeam?.players || [];
   const availableBatsmen = bat.filter((p: any) =>
     !curInn.dismissed_ids?.includes(p.player_id) &&
-    p.player_id !== curInn.striker_id &&
-    p.player_id !== curInn.non_striker_id
+    p.player_id !== curInn.striker_id && p.player_id !== curInn.non_striker_id
   );
-  const availableBowlers = (bowlTeam?.players || []);
+  const availableBowlers = (bowlTeam?.players || []).filter((p: any) => p.player_id !== curInn.bowler_id);
+  const fielders = bowlTeam?.players || [];
+
+  const strikerObj = playerObj(curInn.striker_id);
+  const nonStrikerObj = playerObj(curInn.non_striker_id);
+  const bowlerObj = playerObj(curInn.bowler_id);
+  const strikerStat = curInn.batters?.[curInn.striker_id];
+  const nonStrikerStat = curInn.batters?.[curInn.non_striker_id];
+  const bowlerStat = curInn.bowlers?.[curInn.bowler_id];
+
+  const tossLine = match.toss_winner_team_id ? `${match.toss_winner_team_id === match.team_a_id ? match.team_a_short : match.team_b_short} won toss & chose to ${match.toss_decision}` : "";
+  const momPlayer = match.man_of_the_match_id ? playerObj(match.man_of_the_match_id) : null;
+  const momPic = momPlayer?.profile_picture_path ? fileUrl(momPlayer.profile_picture_path, token) : momPlayer?.picture;
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]} testID="live-match-screen">
       <View style={styles.headerRow}>
-        <Pressable style={styles.hbtn} onPress={() => router.back()}><Ionicons name="chevron-back" size={24} color={colors.onSurface} /></Pressable>
+        <Pressable style={styles.hbtn} onPress={() => router.back()}><Ionicons name="chevron-back" size={22} color={colors.onSurface} /></Pressable>
         <Text style={styles.htitle}>{match.team_a_short} vs {match.team_b_short}</Text>
-        <View style={{ width: 32 }} />
+        <Pressable testID="scorecard-btn" style={styles.hbtnIcon} onPress={() => router.push(`/matches/${id}/scorecard`)}><Ionicons name="list-outline" size={22} color={colors.onSurface} /></Pressable>
+        <Pressable testID="share-btn" style={styles.hbtnIcon} onPress={() => setShowShare(true)}><Ionicons name="share-social-outline" size={22} color={colors.onSurface} /></Pressable>
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false}>
@@ -251,64 +323,69 @@ export default function LiveMatch() {
           </View>
           <Text style={styles.battingLbl}>Batting</Text>
           <Text style={styles.battingTeam}>{battingName}</Text>
-          <Text style={styles.bigScore}>{curInn.runs}<Text style={{ fontSize: 30 }}>/{curInn.wickets}</Text></Text>
+          <Text style={styles.bigScore}>{curInn.runs}<Text style={{ fontSize: 28 }}>/{curInn.wickets}</Text></Text>
           <View style={styles.scoreMeta}>
-            <View style={styles.metaBlock}>
+            <View>
               <Text style={styles.metaLbl}>Overs</Text>
               <Text style={styles.metaVal}>{oversStr}/{match.overs}</Text>
             </View>
-            <View style={styles.metaBlock}>
+            <View>
               <Text style={styles.metaLbl}>CRR</Text>
               <Text style={styles.metaVal}>{runRate}</Text>
             </View>
           </View>
           {chaseInfo ? <Text style={styles.chase}>{chaseInfo}</Text> : null}
+          {tossLine ? <Text style={styles.toss}>{tossLine}</Text> : null}
           {isCompleted && match.result_text ? <Text style={styles.result} testID="result-text">🏆 {match.result_text}</Text> : null}
         </View>
 
-        {!isCompleted && (
+        {!isCompleted && strikerObj && (
           <View style={styles.playersRow}>
             <View style={[styles.playerBox, styles.playerBoxActive]}>
-              <Text style={styles.playerLbl}>⚡ Striker</Text>
-              <Text style={styles.playerName} testID="striker-name">{playerName(curInn.striker_id)}</Text>
+              <View style={styles.playerAvatar}>
+                {strikerObj.profile_picture_path || strikerObj.picture ? <Image source={{ uri: fileUrl(strikerObj.profile_picture_path, token) || strikerObj.picture, headers: token ? { Authorization: `Bearer ${token}` } : undefined }} style={styles.playerAvatarImg} /> : <Text style={styles.playerAvatarText}>{strikerObj.name?.[0]}</Text>}
+              </View>
+              <View style={styles.playerBoxCol}>
+                <Text style={styles.playerLbl}>⚡ Striker</Text>
+                <Text style={styles.playerName} testID="striker-name" numberOfLines={1}>{strikerObj.name}</Text>
+                {strikerStat && <Text style={styles.playerStat}>{strikerStat.runs}({strikerStat.balls})</Text>}
+              </View>
             </View>
             <View style={styles.playerBox}>
-              <Text style={styles.playerLbl}>Non-Striker</Text>
-              <Text style={styles.playerName} testID="nonstriker-name">{playerName(curInn.non_striker_id)}</Text>
+              <View style={styles.playerAvatar}>
+                {nonStrikerObj?.profile_picture_path || nonStrikerObj?.picture ? <Image source={{ uri: fileUrl(nonStrikerObj.profile_picture_path, token) || nonStrikerObj.picture, headers: token ? { Authorization: `Bearer ${token}` } : undefined }} style={styles.playerAvatarImg} /> : <Text style={styles.playerAvatarText}>{nonStrikerObj?.name?.[0] || "?"}</Text>}
+              </View>
+              <View style={styles.playerBoxCol}>
+                <Text style={styles.playerLbl}>Non-Striker</Text>
+                <Text style={styles.playerName} testID="nonstriker-name" numberOfLines={1}>{nonStrikerObj?.name || "-"}</Text>
+                {nonStrikerStat && <Text style={styles.playerStat}>{nonStrikerStat.runs}({nonStrikerStat.balls})</Text>}
+              </View>
             </View>
             <View style={styles.playerBox}>
-              <Text style={styles.playerLbl}>Bowler</Text>
-              <Text style={styles.playerName} testID="bowler-name">{playerName(curInn.bowler_id)}</Text>
+              <View style={styles.playerAvatar}>
+                {bowlerObj?.profile_picture_path || bowlerObj?.picture ? <Image source={{ uri: fileUrl(bowlerObj.profile_picture_path, token) || bowlerObj.picture, headers: token ? { Authorization: `Bearer ${token}` } : undefined }} style={styles.playerAvatarImg} /> : <Text style={styles.playerAvatarText}>{bowlerObj?.name?.[0] || "?"}</Text>}
+              </View>
+              <View style={styles.playerBoxCol}>
+                <Text style={styles.playerLbl}>Bowler</Text>
+                <Text style={styles.playerName} testID="bowler-name" numberOfLines={1}>{bowlerObj?.name || "-"}</Text>
+                {bowlerStat && <Text style={styles.playerStat}>{Math.floor(bowlerStat.balls / 6)}.{bowlerStat.balls % 6} - {bowlerStat.runs} - {bowlerStat.wickets}</Text>}
+              </View>
             </View>
           </View>
         )}
 
-        {!isCompleted && curInn.needs_new_batsman && (
+        {!isCompleted && curInn.needs_new_batsman && !batsmanForNextBall && (
           <View style={styles.needsBanner} testID="needs-batsman-banner">
-            <Ionicons name="warning" size={20} color={colors.onWarning} />
+            <Ionicons name="warning" size={18} color={colors.onWarning} />
             <Text style={styles.needsText}>Wicket! Select the new batsman.</Text>
-            <Pressable style={styles.needsBtn} onPress={() => setShowNewBatsman(true)} testID="pick-batsman-btn">
-              <Text style={styles.needsBtnText}>Pick</Text>
-            </Pressable>
+            <Pressable style={styles.needsBtn} onPress={() => setShowNewBatsman(true)} testID="pick-batsman-btn"><Text style={styles.needsBtnText}>Pick</Text></Pressable>
           </View>
         )}
-        {!isCompleted && curInn.needs_new_bowler && (
+        {!isCompleted && curInn.needs_new_bowler && !bowlerForNextBall && (
           <View style={styles.needsBanner} testID="needs-bowler-banner">
-            <Ionicons name="warning" size={20} color={colors.onWarning} />
+            <Ionicons name="warning" size={18} color={colors.onWarning} />
             <Text style={styles.needsText}>Over complete. Select the next bowler.</Text>
-            <Pressable style={styles.needsBtn} onPress={() => setShowNewBowler(true)} testID="pick-bowler-btn">
-              <Text style={styles.needsBtnText}>Pick</Text>
-            </Pressable>
-          </View>
-        )}
-        {!isCompleted && batsmanForNextBall && (
-          <View style={styles.needsBanner}>
-            <Text style={styles.needsText}>New batsman ready: {playerName(batsmanForNextBall)} (applies on next ball)</Text>
-          </View>
-        )}
-        {!isCompleted && bowlerForNextBall && (
-          <View style={styles.needsBanner}>
-            <Text style={styles.needsText}>New bowler ready: {playerName(bowlerForNextBall)} (applies on next ball)</Text>
+            <Pressable style={styles.needsBtn} onPress={() => setShowNewBowler(true)} testID="pick-bowler-btn"><Text style={styles.needsBtnText}>Pick</Text></Pressable>
           </View>
         )}
 
@@ -318,7 +395,7 @@ export default function LiveMatch() {
               {(["none","wide","no_ball","bye","leg_bye"] as const).map((e) => (
                 <Pressable key={e} testID={`extra-${e}`} style={[styles.extraChip, extra === e && styles.extraChipActive]} onPress={() => setExtra(e)}>
                   <Text style={[styles.extraText, extra === e && styles.extraTextActive]}>
-                    {e === "none" ? "OFF BAT" : e === "wide" ? "WIDE" : e === "no_ball" ? "NO BALL" : e === "bye" ? "BYE" : "LEG BYE"}
+                    {e === "none" ? "OFF BAT" : e === "wide" ? "WD" : e === "no_ball" ? "NB" : e === "bye" ? "BYE" : "LB"}
                   </Text>
                 </Pressable>
               ))}
@@ -326,44 +403,58 @@ export default function LiveMatch() {
 
             <View style={styles.runsGrid}>
               {[0, 1, 2, 3, 4, 6].map((n) => (
-                <Pressable
-                  key={n}
-                  testID={`run-${n}`}
-                  style={[styles.runBtn, (n === 4 || n === 6) ? styles.runBtnPrimary : null]}
-                  onPress={() => enhancedSendBall({ runs: n, extra_type: extra, wicket: false })}
-                  disabled={saving}
-                >
+                <Pressable key={n} testID={`run-${n}`} style={[styles.runBtn, (n === 4 || n === 6) ? styles.runBtnPrimary : null]} onPress={() => runsButton(n)} disabled={saving}>
                   <Text style={[styles.runText, (n === 4 || n === 6) && styles.runTextInv]}>{n}</Text>
-                  <Text style={[styles.runLbl, (n === 4 || n === 6) && styles.runLblInv]}>
-                    {n === 4 ? "FOUR" : n === 6 ? "SIX" : n === 0 ? "DOT" : n === 1 ? "SINGLE" : `${n} RUNS`}
-                  </Text>
+                  <Text style={[styles.runLbl, (n === 4 || n === 6) && styles.runLblInv]}>{n === 4 ? "FOUR" : n === 6 ? "SIX" : n === 0 ? "DOT" : n === 1 ? "SINGLE" : `${n} RUNS`}</Text>
                 </Pressable>
               ))}
             </View>
 
             <View style={styles.actionBar}>
-              <Pressable testID="wicket-btn" style={styles.wicketBtn} onPress={() => enhancedSendBall({ runs: 0, extra_type: extra, wicket: true })} disabled={saving}>
+              <Pressable testID="wicket-btn" style={styles.wicketBtn} onPress={wicketButton} disabled={saving}>
                 <Text style={styles.wicketText}>WICKET</Text>
               </Pressable>
-              <Pressable testID="swap-btn" style={styles.swapBtn} onPress={() => enhancedSendBall({ runs: 0, extra_type: "none", wicket: false, swap_strike: true })} disabled={saving}>
-                <Ionicons name="swap-horizontal" size={22} color={colors.onSurface} />
+              <Pressable testID="undo-btn" style={styles.undoBtn} onPress={undo} disabled={saving}>
+                <Ionicons name="arrow-undo" size={16} color={colors.onSurface} />
+                <Text style={styles.undoText}>UNDO</Text>
+              </Pressable>
+              <Pressable testID="swap-btn" style={styles.swapBtn} onPress={() => sendBall({ runs: 0, extra_type: "none", wicket: false, swap_strike: true })} disabled={saving}>
+                <Ionicons name="swap-horizontal" size={20} color={colors.onSurface} />
               </Pressable>
             </View>
           </>
         )}
 
         {isCompleted && (
-          <View style={styles.completedCard} testID="match-completed-card">
-            <Ionicons name="trophy" size={40} color={colors.warning} />
-            <Text style={styles.completedTitle}>Match Complete</Text>
-            <Text style={styles.completedSub}>{match.result_text}</Text>
-          </View>
+          <>
+            <View style={styles.completedCard} testID="match-completed-card">
+              <Ionicons name="trophy" size={40} color={colors.warning} />
+              <Text style={styles.completedTitle}>Match Complete</Text>
+              <Text style={styles.completedSub}>{match.result_text}</Text>
+            </View>
+            {momPlayer ? (
+              <View style={styles.momCard} testID="mom-card">
+                <View style={styles.momAvatar}>
+                  {momPic ? <Image source={{ uri: momPic, headers: token ? { Authorization: `Bearer ${token}` } : undefined }} style={styles.momAvatarImg} /> : <Text style={styles.playerAvatarText}>{momPlayer.name?.[0]}</Text>}
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.momLbl}>🏅 MAN OF THE MATCH</Text>
+                  <Text style={styles.momName}>{momPlayer.name}</Text>
+                  <Text style={styles.momMeta}>{match.man_of_the_match_team_id === match.team_a_id ? match.team_a_name : match.team_b_name}</Text>
+                </View>
+              </View>
+            ) : (
+              <Pressable testID="pick-mom-btn" style={styles.primaryBtn} onPress={() => setShowMoM(true)}>
+                <Text style={styles.primaryBtnText}>Select Man of the Match</Text>
+              </Pressable>
+            )}
+          </>
         )}
 
         <View style={{ height: 24 + insets.bottom }} />
       </ScrollView>
 
-      {/* New Batsman Modal */}
+      {/* New Batsman */}
       <Modal visible={showNewBatsman} animationType="slide" onRequestClose={() => setShowNewBatsman(false)}>
         <View style={[styles.modal, { paddingTop: insets.top }]} testID="new-batsman-modal">
           <View style={styles.modalHead}>
@@ -372,21 +463,24 @@ export default function LiveMatch() {
             <View style={{ width: 32 }} />
           </View>
           <ScrollView>
-            {availableBatsmen.map((p: any) => (
-              <Pressable key={p.player_id} testID={`newbat-${p.player_id}`} style={[styles.modalPlayer, pickedBatsman === p.player_id && styles.modalPlayerActive]} onPress={() => setPickedBatsman(p.player_id)}>
-                <View style={styles.modalAvatar}><Text style={styles.modalAvatarText}>{p.name?.[0]}</Text></View>
-                <Text style={styles.modalName}>{p.name}</Text>
-                {pickedBatsman === p.player_id && <Ionicons name="checkmark-circle" size={22} color={colors.brandPrimary} />}
-              </Pressable>
-            ))}
+            {availableBatsmen.map((p: any) => {
+              const pic = p.profile_picture_path ? fileUrl(p.profile_picture_path, token) : p.picture;
+              return (
+                <Pressable key={p.player_id} testID={`newbat-${p.player_id}`} style={[styles.modalPlayer, pickedBatsman === p.player_id && styles.modalPlayerActive]} onPress={() => setPickedBatsman(p.player_id)}>
+                  <View style={styles.modalAvatar}>{pic ? <Image source={{ uri: pic, headers: token ? { Authorization: `Bearer ${token}` } : undefined }} style={styles.modalAvatarImg} /> : <Text style={styles.modalAvatarText}>{p.name?.[0]}</Text>}</View>
+                  <Text style={styles.modalName}>{p.name}</Text>
+                  {pickedBatsman === p.player_id && <Ionicons name="checkmark-circle" size={22} color={colors.brandPrimary} />}
+                </Pressable>
+              );
+            })}
           </ScrollView>
-          <Pressable testID="confirm-batsman-btn" style={styles.modalBtn} onPress={applyNewBatsman} disabled={!pickedBatsman}>
+          <Pressable testID="confirm-batsman-btn" style={styles.modalBtn} onPress={() => { setBatsmanForNextBall(pickedBatsman); setPickedBatsman(""); setShowNewBatsman(false); }} disabled={!pickedBatsman}>
             <Text style={styles.modalBtnText}>Confirm</Text>
           </Pressable>
         </View>
       </Modal>
 
-      {/* New Bowler Modal */}
+      {/* New Bowler */}
       <Modal visible={showNewBowler} animationType="slide" onRequestClose={() => setShowNewBowler(false)}>
         <View style={[styles.modal, { paddingTop: insets.top }]} testID="new-bowler-modal">
           <View style={styles.modalHead}>
@@ -395,17 +489,131 @@ export default function LiveMatch() {
             <View style={{ width: 32 }} />
           </View>
           <ScrollView>
-            {availableBowlers.map((p: any) => (
-              <Pressable key={p.player_id} testID={`newbowl-${p.player_id}`} style={[styles.modalPlayer, pickedBowler === p.player_id && styles.modalPlayerActive]} onPress={() => setPickedBowler(p.player_id)}>
-                <View style={styles.modalAvatar}><Text style={styles.modalAvatarText}>{p.name?.[0]}</Text></View>
-                <Text style={styles.modalName}>{p.name}</Text>
-                {pickedBowler === p.player_id && <Ionicons name="checkmark-circle" size={22} color={colors.brandPrimary} />}
-              </Pressable>
-            ))}
+            {availableBowlers.map((p: any) => {
+              const pic = p.profile_picture_path ? fileUrl(p.profile_picture_path, token) : p.picture;
+              return (
+                <Pressable key={p.player_id} testID={`newbowl-${p.player_id}`} style={[styles.modalPlayer, pickedBowler === p.player_id && styles.modalPlayerActive]} onPress={() => setPickedBowler(p.player_id)}>
+                  <View style={styles.modalAvatar}>{pic ? <Image source={{ uri: pic, headers: token ? { Authorization: `Bearer ${token}` } : undefined }} style={styles.modalAvatarImg} /> : <Text style={styles.modalAvatarText}>{p.name?.[0]}</Text>}</View>
+                  <Text style={styles.modalName}>{p.name}</Text>
+                  {pickedBowler === p.player_id && <Ionicons name="checkmark-circle" size={22} color={colors.brandPrimary} />}
+                </Pressable>
+              );
+            })}
           </ScrollView>
-          <Pressable testID="confirm-bowler-btn" style={styles.modalBtn} onPress={applyNewBowler} disabled={!pickedBowler}>
+          <Pressable testID="confirm-bowler-btn" style={styles.modalBtn} onPress={() => { setBowlerForNextBall(pickedBowler); setPickedBowler(""); setShowNewBowler(false); }} disabled={!pickedBowler}>
             <Text style={styles.modalBtnText}>Confirm</Text>
           </Pressable>
+        </View>
+      </Modal>
+
+      {/* Wicket type */}
+      <Modal visible={showWicketType} animationType="slide" onRequestClose={() => setShowWicketType(false)}>
+        <View style={[styles.modal, { paddingTop: insets.top }]} testID="wicket-type-modal">
+          <View style={styles.modalHead}>
+            <Pressable style={styles.hbtn} onPress={() => setShowWicketType(false)}><Ionicons name="close" size={24} color={colors.onSurface} /></Pressable>
+            <Text style={styles.modalTitle}>How was the batsman out?</Text>
+            <View style={{ width: 32 }} />
+          </View>
+          <View style={styles.outTypeGrid}>
+            {OUT_TYPES.map((o) => (
+              <Pressable key={o.key} testID={`out-${o.key}`} style={styles.outTypeBtn} onPress={() => {
+                if (OUT_NEEDS_FIELDER[o.key]) {
+                  setPendingWicket({ out_type: o.key, runs: 0 });
+                  setShowWicketType(false);
+                  setShowFielder(true);
+                } else {
+                  submitWicketWith(o.key);
+                }
+              }}>
+                <Ionicons name={o.icon as any} size={24} color={colors.brandPrimary} />
+                <Text style={styles.outTypeText}>{o.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+      </Modal>
+
+      {/* Fielder */}
+      <Modal visible={showFielder} animationType="slide" onRequestClose={() => setShowFielder(false)}>
+        <View style={[styles.modal, { paddingTop: insets.top }]} testID="fielder-modal">
+          <View style={styles.modalHead}>
+            <Pressable style={styles.hbtn} onPress={() => { setShowFielder(false); setPendingWicket(null); }}><Ionicons name="close" size={24} color={colors.onSurface} /></Pressable>
+            <Text style={styles.modalTitle}>
+              {pendingWicket?.out_type === "catch_out" ? "Who took the catch?" :
+               pendingWicket?.out_type === "stumped" ? "Who completed the stumping?" :
+               "Who was the fielder involved?"}
+            </Text>
+            <View style={{ width: 32 }} />
+          </View>
+          <ScrollView>
+            {fielders.map((p: any) => {
+              const pic = p.profile_picture_path ? fileUrl(p.profile_picture_path, token) : p.picture;
+              return (
+                <Pressable key={p.player_id} testID={`fielder-${p.player_id}`} style={[styles.modalPlayer, pickedFielder === p.player_id && styles.modalPlayerActive]} onPress={() => setPickedFielder(p.player_id)}>
+                  <View style={styles.modalAvatar}>{pic ? <Image source={{ uri: pic, headers: token ? { Authorization: `Bearer ${token}` } : undefined }} style={styles.modalAvatarImg} /> : <Text style={styles.modalAvatarText}>{p.name?.[0]}</Text>}</View>
+                  <Text style={styles.modalName}>{p.name}</Text>
+                  {pickedFielder === p.player_id && <Ionicons name="checkmark-circle" size={22} color={colors.brandPrimary} />}
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+          <Pressable testID="confirm-fielder-btn" style={styles.modalBtn} onPress={() => pendingWicket && submitWicketWith(pendingWicket.out_type, pickedFielder)} disabled={!pickedFielder}>
+            <Text style={styles.modalBtnText}>Confirm Wicket</Text>
+          </Pressable>
+        </View>
+      </Modal>
+
+      {/* MoM */}
+      <Modal visible={showMoM} animationType="slide" onRequestClose={() => setShowMoM(false)}>
+        <View style={[styles.modal, { paddingTop: insets.top }]} testID="mom-modal">
+          <View style={styles.modalHead}>
+            <Pressable style={styles.hbtn} onPress={() => setShowMoM(false)}><Ionicons name="close" size={24} color={colors.onSurface} /></Pressable>
+            <Text style={styles.modalTitle}>Man of the Match</Text>
+            <View style={{ width: 32 }} />
+          </View>
+          <View style={{ flexDirection: "row" }}>
+            <Pressable testID="mom-tab-a" style={[{ flex: 1, paddingVertical: 12, alignItems: "center" }, momTab === "a" && { borderBottomWidth: 3, borderBottomColor: colors.brandPrimary }]} onPress={() => setMomTab("a")}>
+              <Text style={{ color: momTab === "a" ? colors.brandPrimary : colors.muted, fontWeight: "700" }}>{match.team_a_short}</Text>
+            </Pressable>
+            <Pressable testID="mom-tab-b" style={[{ flex: 1, paddingVertical: 12, alignItems: "center" }, momTab === "b" && { borderBottomWidth: 3, borderBottomColor: colors.brandPrimary }]} onPress={() => setMomTab("b")}>
+              <Text style={{ color: momTab === "b" ? colors.brandPrimary : colors.muted, fontWeight: "700" }}>{match.team_b_short}</Text>
+            </Pressable>
+          </View>
+          <ScrollView>
+            {((momTab === "a" ? teamA?.players : teamB?.players) || []).map((p: any) => {
+              const pic = p.profile_picture_path ? fileUrl(p.profile_picture_path, token) : p.picture;
+              return (
+                <Pressable key={p.player_id} testID={`mom-pick-${p.player_id}`} style={[styles.modalPlayer, pickedMoM === p.player_id && styles.modalPlayerActive]} onPress={() => setPickedMoM(p.player_id)}>
+                  <View style={styles.modalAvatar}>{pic ? <Image source={{ uri: pic, headers: token ? { Authorization: `Bearer ${token}` } : undefined }} style={styles.modalAvatarImg} /> : <Text style={styles.modalAvatarText}>{p.name?.[0]}</Text>}</View>
+                  <Text style={styles.modalName}>{p.name}</Text>
+                  {pickedMoM === p.player_id && <Ionicons name="checkmark-circle" size={22} color={colors.brandPrimary} />}
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+          <Pressable testID="confirm-mom-btn" style={styles.modalBtn} onPress={submitMoM} disabled={!pickedMoM || saving}>
+            {saving ? <ActivityIndicator color={colors.onBrandPrimary} /> : <Text style={styles.modalBtnText}>Save</Text>}
+          </Pressable>
+        </View>
+      </Modal>
+
+      {/* Share */}
+      <Modal visible={showShare} animationType="slide" onRequestClose={() => setShowShare(false)}>
+        <View style={[styles.modal, { paddingTop: insets.top }]} testID="share-modal">
+          <View style={styles.modalHead}>
+            <Pressable style={styles.hbtn} onPress={() => setShowShare(false)}><Ionicons name="close" size={24} color={colors.onSurface} /></Pressable>
+            <Text style={styles.modalTitle}>Share Live Match</Text>
+            <View style={{ width: 32 }} />
+          </View>
+          <View style={styles.shareBox}>
+            <Text style={styles.shareText}>Anyone with this link can follow the match live — no sign-in needed.</Text>
+            <View style={styles.shareLink}>
+              <Text style={styles.shareLinkText} selectable testID="share-url">{shareUrl}</Text>
+            </View>
+            <Pressable testID="copy-share-btn" style={styles.modalBtn} onPress={copyShare}>
+              <Text style={styles.modalBtnText}>Copy Link</Text>
+            </Pressable>
+          </View>
         </View>
       </Modal>
     </View>
