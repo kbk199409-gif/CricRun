@@ -64,7 +64,7 @@ export default function TournamentsTab() {
           trns.map((t) => (
             <Pressable key={t.tournament_id} testID={`trn-${t.tournament_id}`} style={styles.card} onPress={() => router.push(`/tournaments/${t.tournament_id}`)}>
               <Text style={styles.cardTitle}>{t.name}</Text>
-              <Text style={styles.cardMeta}>{t.format} • {t.overs} overs • {(t.team_ids || []).length} teams{t.location ? ` • ${t.location}` : ""}</Text>
+              <Text style={styles.cardMeta}>{t.overs} overs • {(t.team_ids || []).length} teams{t.location ? ` • ${t.location}` : ""}</Text>
               <View style={styles.chip}><Text style={styles.chipText}>Manage</Text></View>
             </Pressable>
           ))

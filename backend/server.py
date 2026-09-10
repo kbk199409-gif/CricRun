@@ -3,10 +3,10 @@ from fastapi.concurrency import run_in_threadpool
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-import os, logging, uuid, random, string, httpx, requests
+import os, logging, uuid, random, httpx, requests
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Literal
 from datetime import datetime, timezone, timedelta
 
 ROOT_DIR = Path(__file__).parent
@@ -20,6 +20,14 @@ STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https
 STORAGE_URL = STORAGE_BASE.rstrip("/") + "/objstore/api/v1/storage"
 EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
 APP_NAME = os.environ.get("APP_NAME", "crictrack")
+# Dev mode returns the generated OTP in the API response so testers can log in
+# without a real SMS provider. In production, set OTP_DEV_MODE=false and wire an
+# SMS provider in the send endpoint.
+OTP_DEV_MODE = os.environ.get("OTP_DEV_MODE", "true").lower() != "false"
+OTP_TTL_MIN = 5
+OTP_MAX_ATTEMPTS = 5
+OTP_RESEND_COOLDOWN_SEC = 30
+
 storage_key = None
 
 def init_storage():
@@ -57,9 +65,9 @@ class User(BaseModel):
     name: str = ""
     picture: Optional[str] = None
     profile_picture_path: Optional[str] = None
-    batting_style: Optional[str] = None  # right_hand / left_hand
-    bowling_style: Optional[str] = None  # pacer / medium_pacer / spinner / none
-    role: Optional[str] = None  # batsman / bowler / allrounder / wicketkeeper
+    batting_style: Optional[str] = None
+    bowling_style: Optional[str] = None
+    role: Optional[str] = None
     profile_complete: bool = False
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -85,14 +93,17 @@ class TeamCreate(BaseModel):
     short_name: Optional[str] = None
 
 class PlayerAdd(BaseModel):
-    name: str
+    # If user_id given -> link a registered user. Else guest by name.
+    user_id: Optional[str] = None
+    name: Optional[str] = None
     role: Optional[str] = None
 
 class TournamentCreate(BaseModel):
     name: str
     location: Optional[str] = None
-    format: str = "T20"  # T20 / ODI / Test
     overs: int = 20
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
 
 class MatchCreate(BaseModel):
     team_a_id: str
@@ -101,13 +112,19 @@ class MatchCreate(BaseModel):
     tournament_id: Optional[str] = None
     venue: Optional[str] = None
 
-class InningsScoreUpdate(BaseModel):
-    runs: int
-    wickets: int
-    overs: float  # e.g. 12.3 means 12 overs 3 balls
+class InningsStart(BaseModel):
+    striker_id: str        # player_id from batting team
+    non_striker_id: str
+    bowler_id: str         # player_id from bowling team
 
-class MatchCompleteRequest(BaseModel):
-    winner_team_id: Optional[str] = None
+class BallInput(BaseModel):
+    runs: int = 0                            # off the bat OR added to team via bye/lb; base for wide/nb
+    extra_type: Literal["none","wide","no_ball","bye","leg_bye"] = "none"
+    wicket: bool = False
+    out_batsman_id: Optional[str] = None     # if omitted, striker is out
+    new_batsman_id: Optional[str] = None     # required when innings needs_new_batsman
+    new_bowler_id: Optional[str] = None      # required when innings needs_new_bowler
+    swap_strike: bool = False                # for end-of-over placement override (rare)
 
 
 # ============ AUTH HELPERS ============
@@ -137,6 +154,13 @@ async def create_session_for_user(user_id: str) -> str:
         "created_at": datetime.now(timezone.utc),
     })
     return session_token
+
+
+def _norm_phone(p: str) -> str:
+    p = (p or "").strip().replace(" ", "").replace("-", "")
+    if not p.startswith("+") and len(p) == 10 and p.isdigit():
+        p = "+91" + p
+    return p
 
 
 # ============ AUTH ENDPOINTS ============
@@ -178,29 +202,80 @@ async def auth_session(payload: SessionExchange):
 
 @api_router.post("/auth/phone/send")
 async def phone_send(payload: PhoneSendRequest):
-    # Mock: always send code 123456 (any 6-digit code will be accepted on verify)
-    return {"success": True, "message": "OTP sent (demo). Use any 6-digit code, e.g. 123456"}
+    phone = _norm_phone(payload.phone)
+    if not phone or len(phone) < 8:
+        raise HTTPException(status_code=400, detail="Invalid phone number")
+    now = datetime.now(timezone.utc)
+    existing = await db.phone_otps.find_one({"phone": phone}, {"_id": 0})
+    if existing:
+        last_sent = existing.get("last_sent_at")
+        if last_sent and last_sent.tzinfo is None:
+            last_sent = last_sent.replace(tzinfo=timezone.utc)
+        if last_sent and (now - last_sent).total_seconds() < OTP_RESEND_COOLDOWN_SEC:
+            wait = OTP_RESEND_COOLDOWN_SEC - int((now - last_sent).total_seconds())
+            raise HTTPException(status_code=429, detail=f"Please wait {wait}s before requesting another OTP")
+
+    code = f"{random.randint(0, 999999):06d}"
+    expires_at = now + timedelta(minutes=OTP_TTL_MIN)
+    await db.phone_otps.update_one(
+        {"phone": phone},
+        {"$set": {
+            "phone": phone,
+            "code": code,
+            "expires_at": expires_at,
+            "attempts": 0,
+            "last_sent_at": now,
+        }},
+        upsert=True,
+    )
+    resp: Dict[str, Any] = {"success": True, "message": f"OTP sent. Valid for {OTP_TTL_MIN} minutes."}
+    if OTP_DEV_MODE:
+        # Development helper: expose the OTP so testers can complete the flow.
+        resp["dev_code"] = code
+    else:
+        # TODO(prod): send `code` via SMS provider here.
+        pass
+    return resp
 
 
 @api_router.post("/auth/phone/verify")
 async def phone_verify(payload: PhoneVerifyRequest):
-    phone = payload.phone.strip()
-    code = payload.code.strip()
+    phone = _norm_phone(payload.phone)
+    code = (payload.code or "").strip()
     if len(code) != 6 or not code.isdigit():
         raise HTTPException(status_code=400, detail="Enter a valid 6-digit code")
-    if not phone:
-        raise HTTPException(status_code=400, detail="Phone required")
+
+    rec = await db.phone_otps.find_one({"phone": phone}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=400, detail="No OTP requested for this number. Please request one first.")
+
+    exp = rec.get("expires_at")
+    if exp and exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if exp and exp < datetime.now(timezone.utc):
+        await db.phone_otps.delete_one({"phone": phone})
+        raise HTTPException(status_code=400, detail="OTP expired. Please request a new one.")
+
+    attempts = int(rec.get("attempts") or 0)
+    if attempts >= OTP_MAX_ATTEMPTS:
+        await db.phone_otps.delete_one({"phone": phone})
+        raise HTTPException(status_code=429, detail="Too many attempts. Please request a new OTP.")
+
+    if code != rec.get("code"):
+        await db.phone_otps.update_one({"phone": phone}, {"$inc": {"attempts": 1}})
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+
+    # Success — consume OTP.
+    await db.phone_otps.delete_one({"phone": phone})
 
     existing = await db.users.find_one({"phone": phone}, {"_id": 0})
     if existing:
         user_id = existing["user_id"]
-        user = existing
     else:
         user_id = f"user_{uuid.uuid4().hex[:12]}"
         user_doc = User(user_id=user_id, phone=phone, name=f"Player {phone[-4:]}").dict()
         await db.users.insert_one(user_doc.copy())
-        user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
-
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
     token = await create_session_for_user(user_id)
     return {"session_token": token, "user": user}
 
@@ -216,13 +291,29 @@ async def update_profile(payload: ProfileUpdate, authorization: Optional[str] = 
     user = await get_user_from_token(authorization)
     update = {k: v for k, v in payload.dict().items() if v is not None}
     if update:
-        # mark profile complete if batting_style + bowling_style set
         merged = {**user, **update}
         if merged.get("batting_style") and merged.get("bowling_style") and merged.get("name"):
             update["profile_complete"] = True
         await db.users.update_one({"user_id": user["user_id"]}, {"$set": update})
     fresh = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0})
     return {"user": fresh}
+
+
+# ============ USERS SEARCH ============
+@api_router.get("/users/search")
+async def search_users(q: str = "", authorization: Optional[str] = Header(None)):
+    await get_user_from_token(authorization)
+    q = (q or "").strip()
+    if len(q) < 2:
+        return {"users": []}
+    # Match name (partial, case-insensitive) or phone/email exact-ish
+    regex = {"$regex": q, "$options": "i"}
+    cursor = db.users.find(
+        {"$or": [{"name": regex}, {"phone": regex}, {"email": regex}]},
+        {"_id": 0, "user_id": 1, "name": 1, "phone": 1, "email": 1, "picture": 1, "profile_picture_path": 1, "batting_style": 1, "bowling_style": 1, "role": 1},
+    ).limit(20)
+    users = await cursor.to_list(20)
+    return {"users": users}
 
 
 # ============ FILE UPLOAD ============
@@ -242,11 +333,7 @@ async def upload_profile_picture(file: UploadFile = File(...), authorization: Op
 
 @api_router.get("/files/{path:path}")
 async def get_file(path: str, token: Optional[str] = None, authorization: Optional[str] = Header(None)):
-    # Accept either header or query token
-    if token:
-        auth_header = f"Bearer {token}"
-    else:
-        auth_header = authorization
+    auth_header = f"Bearer {token}" if token else authorization
     await get_user_from_token(auth_header)
     content, ct = await run_in_threadpool(get_object, path)
     return Response(content=content, media_type=ct)
@@ -260,20 +347,24 @@ async def create_team(payload: TeamCreate, authorization: Optional[str] = Header
     team = {
         "team_id": team_id,
         "name": payload.name,
-        "short_name": payload.short_name or payload.name[:3].upper(),
+        "short_name": (payload.short_name or payload.name[:3]).upper(),
         "owner_id": user["user_id"],
         "players": [],
         "created_at": datetime.now(timezone.utc),
     }
     await db.teams.insert_one(team.copy())
-    team.pop("_id", None)
+    team = await db.teams.find_one({"team_id": team_id}, {"_id": 0})
     return {"team": team}
 
 
 @api_router.get("/teams")
 async def list_teams(authorization: Optional[str] = Header(None)):
     user = await get_user_from_token(authorization)
-    teams = await db.teams.find({"owner_id": user["user_id"]}, {"_id": 0}).to_list(500)
+    # Include teams the user owns AND teams they are in.
+    teams = await db.teams.find(
+        {"$or": [{"owner_id": user["user_id"]}, {"players.user_id": user["user_id"]}]},
+        {"_id": 0},
+    ).to_list(500)
     return {"teams": teams}
 
 
@@ -292,9 +383,45 @@ async def add_player(team_id: str, payload: PlayerAdd, authorization: Optional[s
     team = await db.teams.find_one({"team_id": team_id}, {"_id": 0})
     if not team or team["owner_id"] != user["user_id"]:
         raise HTTPException(status_code=404, detail="Team not found")
-    player = {"player_id": f"p_{uuid.uuid4().hex[:8]}", "name": payload.name, "role": payload.role}
+
+    player: Dict[str, Any] = {"player_id": f"p_{uuid.uuid4().hex[:8]}"}
+    if payload.user_id:
+        # Prevent duplicate: same registered user already on this team
+        for p in team.get("players", []):
+            if p.get("user_id") == payload.user_id:
+                raise HTTPException(status_code=400, detail="This user is already on the team")
+        u = await db.users.find_one({"user_id": payload.user_id}, {"_id": 0})
+        if not u:
+            raise HTTPException(status_code=404, detail="User not found")
+        player.update({
+            "user_id": u["user_id"],
+            "name": u.get("name") or "Player",
+            "role": u.get("role"),
+            "batting_style": u.get("batting_style"),
+            "bowling_style": u.get("bowling_style"),
+            "picture": u.get("picture"),
+            "profile_picture_path": u.get("profile_picture_path"),
+        })
+    else:
+        nm = (payload.name or "").strip()
+        if not nm:
+            raise HTTPException(status_code=400, detail="Name required")
+        player.update({"user_id": None, "name": nm, "role": payload.role})
+
     await db.teams.update_one({"team_id": team_id}, {"$push": {"players": player}})
     return {"player": player}
+
+
+@api_router.delete("/teams/{team_id}/players/{player_id}")
+async def remove_player(team_id: str, player_id: str, authorization: Optional[str] = Header(None)):
+    user = await get_user_from_token(authorization)
+    team = await db.teams.find_one({"team_id": team_id}, {"_id": 0})
+    if not team or team["owner_id"] != user["user_id"]:
+        raise HTTPException(status_code=404, detail="Team not found")
+    res = await db.teams.update_one({"team_id": team_id}, {"$pull": {"players": {"player_id": player_id}}})
+    if res.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Player not found")
+    return {"success": True}
 
 
 # ============ TOURNAMENTS ============
@@ -306,14 +433,15 @@ async def create_tournament(payload: TournamentCreate, authorization: Optional[s
         "tournament_id": t_id,
         "name": payload.name,
         "location": payload.location,
-        "format": payload.format,
-        "overs": payload.overs,
+        "overs": int(payload.overs),
+        "start_date": payload.start_date,
+        "end_date": payload.end_date,
         "owner_id": user["user_id"],
         "team_ids": [],
         "created_at": datetime.now(timezone.utc),
     }
     await db.tournaments.insert_one(tournament.copy())
-    tournament.pop("_id", None)
+    tournament = await db.tournaments.find_one({"tournament_id": t_id}, {"_id": 0})
     return {"tournament": tournament}
 
 
@@ -339,12 +467,6 @@ async def add_team_to_tournament(t_id: str, team_id: str, authorization: Optiona
     return {"success": True}
 
 
-def _overs_to_balls(overs: float) -> int:
-    whole = int(overs)
-    balls = round((overs - whole) * 10)
-    return whole * 6 + balls
-
-
 @api_router.get("/tournaments/{t_id}")
 async def get_tournament(t_id: str, authorization: Optional[str] = Header(None)):
     await get_user_from_token(authorization)
@@ -354,60 +476,71 @@ async def get_tournament(t_id: str, authorization: Optional[str] = Header(None))
     teams = await db.teams.find({"team_id": {"$in": trn.get("team_ids", [])}}, {"_id": 0}).to_list(500)
     matches = await db.matches.find({"tournament_id": t_id}, {"_id": 0}).to_list(500)
 
-    # Compute points table with NRR
     stats: Dict[str, Dict[str, Any]] = {t["team_id"]: {
         "team_id": t["team_id"], "name": t["name"], "short_name": t["short_name"],
-        "P": 0, "W": 0, "L": 0, "T": 0, "NR": 0, "Pts": 0,
+        "P": 0, "W": 0, "L": 0, "T": 0, "Pts": 0,
         "runs_for": 0, "balls_for": 0, "runs_against": 0, "balls_against": 0,
     } for t in teams}
+    max_balls = trn.get("overs", 20) * 6
 
-    max_overs = trn.get("overs", 20)
+    def _bat_balls(ing: dict) -> int:
+        b = int(ing.get("balls") or 0)
+        if int(ing.get("wickets") or 0) >= 10:
+            return max_balls
+        return b if b > 0 else max_balls
+
     for m in matches:
         if m.get("status") != "completed":
             continue
         a = m["team_a_id"]; b = m["team_b_id"]
         if a not in stats or b not in stats:
             continue
-        ia = m.get("innings_a", {"runs": 0, "wickets": 0, "overs": 0.0})
-        ib = m.get("innings_b", {"runs": 0, "wickets": 0, "overs": 0.0})
-        ra, wa, oa = ia.get("runs", 0), ia.get("wickets", 0), ia.get("overs", 0.0)
-        rb, wb, ob = ib.get("runs", 0), ib.get("wickets", 0), ib.get("overs", 0.0)
-        ba_balls = max_overs * 6 if wa >= 10 else _overs_to_balls(oa)
-        bb_balls = max_overs * 6 if wb >= 10 else _overs_to_balls(ob)
-        if ba_balls == 0: ba_balls = max_overs * 6
-        if bb_balls == 0: bb_balls = max_overs * 6
+        ia = m.get("innings_a", {})
+        ib = m.get("innings_b", {})
+        ra = int(ia.get("runs") or 0); rb = int(ib.get("runs") or 0)
+        ba = _bat_balls(ia); bb = _bat_balls(ib)
 
         stats[a]["P"] += 1; stats[b]["P"] += 1
-        stats[a]["runs_for"] += ra; stats[a]["balls_for"] += ba_balls
-        stats[a]["runs_against"] += rb; stats[a]["balls_against"] += bb_balls
-        stats[b]["runs_for"] += rb; stats[b]["balls_for"] += bb_balls
-        stats[b]["runs_against"] += ra; stats[b]["balls_against"] += ba_balls
+        stats[a]["runs_for"] += ra; stats[a]["balls_for"] += ba
+        stats[a]["runs_against"] += rb; stats[a]["balls_against"] += bb
+        stats[b]["runs_for"] += rb; stats[b]["balls_for"] += bb
+        stats[b]["runs_against"] += ra; stats[b]["balls_against"] += ba
 
         w = m.get("winner_team_id")
         if w == a:
-            stats[a]["W"] += 1; stats[a]["Pts"] += 2
-            stats[b]["L"] += 1
+            stats[a]["W"] += 1; stats[a]["Pts"] += 2; stats[b]["L"] += 1
         elif w == b:
-            stats[b]["W"] += 1; stats[b]["Pts"] += 2
-            stats[a]["L"] += 1
+            stats[b]["W"] += 1; stats[b]["Pts"] += 2; stats[a]["L"] += 1
         else:
             stats[a]["T"] += 1; stats[b]["T"] += 1
             stats[a]["Pts"] += 1; stats[b]["Pts"] += 1
 
-    points_table = []
+    table = []
     for s in stats.values():
-        overs_for = s["balls_for"] / 6 if s["balls_for"] else 0
-        overs_against = s["balls_against"] / 6 if s["balls_against"] else 0
-        rr_for = (s["runs_for"] / overs_for) if overs_for else 0
-        rr_against = (s["runs_against"] / overs_against) if overs_against else 0
-        s["NRR"] = round(rr_for - rr_against, 3)
-        points_table.append(s)
-    points_table.sort(key=lambda x: (-x["Pts"], -x["NRR"]))
-
-    return {"tournament": trn, "teams": teams, "matches": matches, "points_table": points_table}
+        of = s["balls_for"] / 6 if s["balls_for"] else 0
+        oa = s["balls_against"] / 6 if s["balls_against"] else 0
+        rf = (s["runs_for"] / of) if of else 0
+        ra = (s["runs_against"] / oa) if oa else 0
+        s["NRR"] = round(rf - ra, 3)
+        table.append(s)
+    table.sort(key=lambda x: (-x["Pts"], -x["NRR"]))
+    return {"tournament": trn, "teams": teams, "matches": matches, "points_table": table}
 
 
 # ============ MATCHES ============
+def _blank_innings() -> dict:
+    return {
+        "runs": 0, "wickets": 0, "balls": 0,
+        "started": False, "completed": False,
+        "striker_id": None, "non_striker_id": None, "bowler_id": None,
+        "batted_ids": [],           # all players who came on strike (for scorecard)
+        "dismissed_ids": [],
+        "needs_new_batsman": False,
+        "needs_new_bowler": False,
+        "last_ball": None,
+    }
+
+
 @api_router.post("/matches")
 async def create_match(payload: MatchCreate, authorization: Optional[str] = Header(None)):
     user = await get_user_from_token(authorization)
@@ -415,28 +548,28 @@ async def create_match(payload: MatchCreate, authorization: Optional[str] = Head
     team_b = await db.teams.find_one({"team_id": payload.team_b_id}, {"_id": 0})
     if not team_a or not team_b:
         raise HTTPException(status_code=404, detail="Team not found")
+    if payload.team_a_id == payload.team_b_id:
+        raise HTTPException(status_code=400, detail="Teams must be different")
     match_id = f"mch_{uuid.uuid4().hex[:10]}"
     match = {
         "match_id": match_id,
-        "team_a_id": payload.team_a_id,
-        "team_b_id": payload.team_b_id,
-        "team_a_name": team_a["name"],
-        "team_b_name": team_b["name"],
-        "team_a_short": team_a["short_name"],
-        "team_b_short": team_b["short_name"],
-        "overs": payload.overs,
+        "team_a_id": payload.team_a_id, "team_b_id": payload.team_b_id,
+        "team_a_name": team_a["name"], "team_b_name": team_b["name"],
+        "team_a_short": team_a["short_name"], "team_b_short": team_b["short_name"],
+        "overs": int(payload.overs),
         "tournament_id": payload.tournament_id,
         "venue": payload.venue,
         "owner_id": user["user_id"],
-        "status": "live",  # live / completed
+        "status": "created",                  # created -> live -> completed
         "current_innings": "a",
-        "innings_a": {"runs": 0, "wickets": 0, "overs": 0.0},
-        "innings_b": {"runs": 0, "wickets": 0, "overs": 0.0},
+        "innings_a": _blank_innings(),
+        "innings_b": _blank_innings(),
         "winner_team_id": None,
+        "result_text": None,
         "created_at": datetime.now(timezone.utc),
     }
     await db.matches.insert_one(match.copy())
-    match.pop("_id", None)
+    match = await db.matches.find_one({"match_id": match_id}, {"_id": 0})
     return {"match": match}
 
 
@@ -456,44 +589,230 @@ async def get_match(match_id: str, authorization: Optional[str] = Header(None)):
     return {"match": m}
 
 
-@api_router.put("/matches/{match_id}/innings/{side}")
-async def update_innings(match_id: str, side: str, payload: InningsScoreUpdate, authorization: Optional[str] = Header(None)):
-    user = await get_user_from_token(authorization)
+async def _get_owner_match(match_id: str, user_id: str) -> dict:
+    m = await db.matches.find_one({"match_id": match_id}, {"_id": 0})
+    if not m or m["owner_id"] != user_id:
+        raise HTTPException(status_code=404, detail="Match not found")
+    return m
+
+
+def _batting_team_id(match: dict, side: str) -> str:
+    return match["team_a_id"] if side == "a" else match["team_b_id"]
+
+
+async def _team_player_ids(team_id: str) -> Dict[str, str]:
+    t = await db.teams.find_one({"team_id": team_id}, {"_id": 0})
+    return {p["player_id"]: p.get("name") or "Player" for p in (t or {}).get("players", [])}
+
+
+@api_router.post("/matches/{match_id}/innings/{side}/start")
+async def start_innings(match_id: str, side: str, payload: InningsStart, authorization: Optional[str] = Header(None)):
     if side not in ("a", "b"):
         raise HTTPException(status_code=400, detail="Invalid side")
-    m = await db.matches.find_one({"match_id": match_id}, {"_id": 0})
-    if not m or m["owner_id"] != user["user_id"]:
-        raise HTTPException(status_code=404, detail="Not found")
+    user = await get_user_from_token(authorization)
+    match = await _get_owner_match(match_id, user["user_id"])
+    if match.get("status") == "completed":
+        raise HTTPException(status_code=400, detail="Match completed")
+
+    bat_team = _batting_team_id(match, side)
+    bowl_team = match["team_b_id"] if side == "a" else match["team_a_id"]
+    bat_ids = await _team_player_ids(bat_team)
+    bowl_ids = await _team_player_ids(bowl_team)
+
+    if payload.striker_id not in bat_ids or payload.non_striker_id not in bat_ids:
+        raise HTTPException(status_code=400, detail="Striker/non-striker must be from batting team")
+    if payload.striker_id == payload.non_striker_id:
+        raise HTTPException(status_code=400, detail="Striker and non-striker must be different players")
+    if payload.bowler_id not in bowl_ids:
+        raise HTTPException(status_code=400, detail="Bowler must be from bowling team")
+
+    innings = match["innings_a"] if side == "a" else match["innings_b"]
+    if innings.get("started"):
+        raise HTTPException(status_code=400, detail="Innings already started")
+    innings.update({
+        "started": True,
+        "striker_id": payload.striker_id,
+        "non_striker_id": payload.non_striker_id,
+        "bowler_id": payload.bowler_id,
+        "batted_ids": [payload.striker_id, payload.non_striker_id],
+        "needs_new_batsman": False,
+        "needs_new_bowler": False,
+    })
     field = "innings_a" if side == "a" else "innings_b"
-    await db.matches.update_one({"match_id": match_id}, {"$set": {
-        field: {"runs": payload.runs, "wickets": payload.wickets, "overs": payload.overs},
-        "current_innings": side,
-    }})
-    m = await db.matches.find_one({"match_id": match_id}, {"_id": 0})
-    return {"match": m}
+    await db.matches.update_one({"match_id": match_id}, {"$set": {field: innings, "status": "live", "current_innings": side}})
+    return {"match": await db.matches.find_one({"match_id": match_id}, {"_id": 0})}
+
+
+@api_router.post("/matches/{match_id}/innings/{side}/ball")
+async def record_ball(match_id: str, side: str, payload: BallInput, authorization: Optional[str] = Header(None)):
+    if side not in ("a", "b"):
+        raise HTTPException(status_code=400, detail="Invalid side")
+    user = await get_user_from_token(authorization)
+    match = await _get_owner_match(match_id, user["user_id"])
+    if match.get("status") == "completed":
+        raise HTTPException(status_code=400, detail="Match completed")
+
+    field = "innings_a" if side == "a" else "innings_b"
+    innings = match[field]
+    if not innings.get("started"):
+        raise HTTPException(status_code=400, detail="Innings has not started. Set opening players first.")
+    if innings.get("completed"):
+        raise HTTPException(status_code=400, detail="Innings already completed")
+
+    max_balls = int(match["overs"]) * 6
+    bat_team = _batting_team_id(match, side)
+    bowl_team = match["team_b_id"] if side == "a" else match["team_a_id"]
+    bat_players = await _team_player_ids(bat_team)
+    bowl_players = await _team_player_ids(bowl_team)
+
+    # Handle new batsman if pending (from previous wicket)
+    if innings.get("needs_new_batsman"):
+        if not payload.new_batsman_id:
+            raise HTTPException(status_code=400, detail="Select the new batsman first")
+        if payload.new_batsman_id not in bat_players:
+            raise HTTPException(status_code=400, detail="New batsman must be from batting team")
+        if payload.new_batsman_id in innings.get("dismissed_ids", []):
+            raise HTTPException(status_code=400, detail="This batsman is already out")
+        if payload.new_batsman_id in (innings.get("striker_id"), innings.get("non_striker_id")):
+            raise HTTPException(status_code=400, detail="This batsman is already at the crease")
+        # The dismissed batsman's slot is empty (we cleared it when wicket happened).
+        if innings.get("striker_id") is None:
+            innings["striker_id"] = payload.new_batsman_id
+        else:
+            innings["non_striker_id"] = payload.new_batsman_id
+        if payload.new_batsman_id not in innings["batted_ids"]:
+            innings["batted_ids"].append(payload.new_batsman_id)
+        innings["needs_new_batsman"] = False
+
+    # Handle new bowler if pending (end of over)
+    if innings.get("needs_new_bowler"):
+        if not payload.new_bowler_id:
+            raise HTTPException(status_code=400, detail="Select the next over's bowler first")
+        if payload.new_bowler_id not in bowl_players:
+            raise HTTPException(status_code=400, detail="Bowler must be from bowling team")
+        # (Rule: same bowler can't bowl consecutive overs, but we don't enforce that here.)
+        innings["bowler_id"] = payload.new_bowler_id
+        innings["needs_new_bowler"] = False
+
+    # Now record the ball.
+    extra = payload.extra_type or "none"
+    runs = max(0, int(payload.runs or 0))
+    legal = extra not in ("wide", "no_ball")
+
+    # Team runs accounting
+    team_runs = runs
+    if extra == "wide" or extra == "no_ball":
+        team_runs = runs + 1  # 1 extra for the wide/no-ball itself + any additional runs
+
+    innings["runs"] = int(innings["runs"]) + team_runs
+
+    # Strike rotation on odd runs (runs off the bat, bye, or leg-bye)
+    rotate = False
+    if extra in ("none", "bye", "leg_bye"):
+        rotate = (runs % 2 == 1)
+    # No strike rotation for wide/no-ball unless additional runs are odd
+    if extra in ("wide", "no_ball"):
+        rotate = (runs % 2 == 1)
+
+    # Wicket handling
+    dismissed_now = None
+    if payload.wicket:
+        # Ignore wickets on no-ball (only run-out is possible, but keep simple: reject)
+        if extra == "no_ball":
+            raise HTTPException(status_code=400, detail="Wicket cannot be recorded on a no-ball in this app")
+        innings["wickets"] = int(innings["wickets"]) + 1
+        out_id = payload.out_batsman_id or innings.get("striker_id")
+        dismissed_now = out_id
+        if out_id and out_id not in innings["dismissed_ids"]:
+            innings["dismissed_ids"].append(out_id)
+        # Clear the dismissed slot
+        if out_id == innings.get("striker_id"):
+            innings["striker_id"] = None
+        elif out_id == innings.get("non_striker_id"):
+            innings["non_striker_id"] = None
+        innings["needs_new_batsman"] = True
+
+    # Increment legal balls
+    if legal:
+        innings["balls"] = int(innings["balls"]) + 1
+
+    innings["last_ball"] = {
+        "runs": runs, "extra_type": extra, "wicket": bool(payload.wicket),
+        "team_runs": team_runs, "dismissed": dismissed_now, "legal": legal,
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # End of over: swap strike, ask for new bowler
+    if legal and innings["balls"] % 6 == 0 and innings["balls"] < max_balls:
+        if innings.get("striker_id") and innings.get("non_striker_id"):
+            innings["striker_id"], innings["non_striker_id"] = innings["non_striker_id"], innings["striker_id"]
+        innings["needs_new_bowler"] = True
+
+    # Strike rotation on runs (BEFORE any over-end swap? Standard cricket: rotate on run then over-end swap.)
+    # Simplification: apply rotate after runs, and then over-end swap already handled above.
+    if rotate and not payload.wicket and innings.get("striker_id") and innings.get("non_striker_id"):
+        innings["striker_id"], innings["non_striker_id"] = innings["non_striker_id"], innings["striker_id"]
+
+    if payload.swap_strike and innings.get("striker_id") and innings.get("non_striker_id"):
+        innings["striker_id"], innings["non_striker_id"] = innings["non_striker_id"], innings["striker_id"]
+
+    # End innings conditions
+    all_out = innings["wickets"] >= 10
+    overs_done = innings["balls"] >= max_balls
+    target = None
+    if side == "b":
+        target = int(match["innings_a"]["runs"]) + 1
+        if innings["runs"] >= target:
+            innings["completed"] = True
+
+    if all_out or overs_done:
+        innings["completed"] = True
+
+    updates = {field: innings}
+
+    # If innings completed & match should complete
+    if innings["completed"]:
+        if side == "a":
+            # Move to 2nd innings (still 'live' but next side needs a start)
+            updates["current_innings"] = "b"
+        else:
+            # Match complete
+            ra = match["innings_a"]["runs"]
+            rb = innings["runs"]
+            winner = None; text = "Match Tied"
+            if ra > rb:
+                winner = match["team_a_id"]
+                text = f"{match['team_a_name']} won by {ra - rb} runs"
+            elif rb > ra:
+                winner = match["team_b_id"]
+                wkts_left = 10 - int(innings["wickets"])
+                text = f"{match['team_b_name']} won by {wkts_left} wickets"
+            updates["status"] = "completed"
+            updates["winner_team_id"] = winner
+            updates["result_text"] = text
+
+    await db.matches.update_one({"match_id": match_id}, {"$set": updates})
+    return {"match": await db.matches.find_one({"match_id": match_id}, {"_id": 0})}
 
 
 @api_router.post("/matches/{match_id}/complete")
-async def complete_match(match_id: str, payload: MatchCompleteRequest, authorization: Optional[str] = Header(None)):
+async def complete_match(match_id: str, authorization: Optional[str] = Header(None)):
+    """Manually end the match (e.g. rain-abandoned). Uses current scores to pick a winner."""
     user = await get_user_from_token(authorization)
-    m = await db.matches.find_one({"match_id": match_id}, {"_id": 0})
-    if not m or m["owner_id"] != user["user_id"]:
-        raise HTTPException(status_code=404, detail="Not found")
-    winner = payload.winner_team_id
-    if winner is None:
-        ra = m["innings_a"]["runs"]; rb = m["innings_b"]["runs"]
-        if ra > rb: winner = m["team_a_id"]
-        elif rb > ra: winner = m["team_b_id"]
-        else: winner = None
-    await db.matches.update_one({"match_id": match_id}, {"$set": {"status": "completed", "winner_team_id": winner}})
-    m = await db.matches.find_one({"match_id": match_id}, {"_id": 0})
-    return {"match": m}
+    m = await _get_owner_match(match_id, user["user_id"])
+    ra = int(m["innings_a"].get("runs") or 0)
+    rb = int(m["innings_b"].get("runs") or 0)
+    if ra > rb: winner = m["team_a_id"]; text = f"{m['team_a_name']} won by {ra - rb} runs"
+    elif rb > ra: winner = m["team_b_id"]; text = f"{m['team_b_name']} won by {rb - ra} runs"
+    else: winner = None; text = "Match Tied"
+    await db.matches.update_one({"match_id": match_id}, {"$set": {"status": "completed", "winner_team_id": winner, "result_text": text}})
+    return {"match": await db.matches.find_one({"match_id": match_id}, {"_id": 0})}
 
 
 # ============ ROOT ============
 @api_router.get("/")
 async def root():
-    return {"message": "CricTrack API", "status": "ok"}
+    return {"message": "CricTrack API", "status": "ok", "otp_dev_mode": OTP_DEV_MODE}
 
 
 app.include_router(api_router)
@@ -513,24 +832,22 @@ logger = logging.getLogger(__name__)
 @app.on_event("startup")
 async def startup():
     try:
-        try:
+        # Ensure email index only for real emails (not for phone-only signups).
+        existing = await db.users.index_information()
+        if "email_1" in existing and existing["email_1"].get("sparse") and "partialFilterExpression" not in existing["email_1"]:
             await db.users.drop_index("email_1")
-        except Exception:
-            pass
-        await db.users.create_index(
-            "email",
-            unique=True,
-            partialFilterExpression={"email": {"$type": "string"}},
-            name="email_unique_partial",
-        )
+        await db.users.create_index("email", unique=True, partialFilterExpression={"email": {"$type": "string"}})
         await db.users.create_index("user_id", unique=True)
-        await db.users.create_index("phone", sparse=True)
+        await db.users.create_index("phone", partialFilterExpression={"phone": {"$type": "string"}})
+        await db.users.create_index("name")
         await db.user_sessions.create_index("session_token", unique=True)
         await db.user_sessions.create_index("user_id")
         await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
         await db.teams.create_index("team_id", unique=True)
         await db.tournaments.create_index("tournament_id", unique=True)
         await db.matches.create_index("match_id", unique=True)
+        await db.phone_otps.create_index("phone", unique=True)
+        await db.phone_otps.create_index("expires_at", expireAfterSeconds=0)
     except Exception as e:
         logger.warning(f"Index setup: {e}")
     try:

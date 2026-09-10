@@ -122,11 +122,11 @@ export default function MatchesTab() {
                 </View>
                 <View style={styles.teamRow}>
                   <Text style={[styles.teamName, winB && styles.scoreLoss]}>{m.team_a_name}</Text>
-                  <Text style={[styles.score, winB && styles.scoreLoss]}>{m.innings_a.runs}/{m.innings_a.wickets} ({m.innings_a.overs})</Text>
+                  <Text style={[styles.score, winB && styles.scoreLoss]}>{m.innings_a.runs}/{m.innings_a.wickets} ({Math.floor((m.innings_a.balls || 0) / 6)}.{(m.innings_a.balls || 0) % 6})</Text>
                 </View>
                 <View style={styles.teamRow}>
                   <Text style={[styles.teamName, winA && styles.scoreLoss]}>{m.team_b_name}</Text>
-                  <Text style={[styles.score, winA && styles.scoreLoss]}>{m.innings_b.runs}/{m.innings_b.wickets} ({m.innings_b.overs})</Text>
+                  <Text style={[styles.score, winA && styles.scoreLoss]}>{m.innings_b.runs}/{m.innings_b.wickets} ({Math.floor((m.innings_b.balls || 0) / 6)}.{(m.innings_b.balls || 0) % 6})</Text>
                 </View>
                 {!isLive && m.winner_team_id && (
                   <Text style={styles.winner}>🏆 {winA ? m.team_a_name : m.team_b_name} won</Text>

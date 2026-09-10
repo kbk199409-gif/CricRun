@@ -110,7 +110,7 @@ export default function TournamentDetail() {
         <LinearGradient colors={["rgba(15,23,42,0.5)", "rgba(15,23,42,0.9)"]} style={styles.scrim} />
         <View style={[styles.headerRow, { paddingTop: insets.top + 4 }]}>
           <Pressable style={styles.hbtn} onPress={() => router.back()}><Ionicons name="chevron-back" size={22} color="#FFFFFF" /></Pressable>
-          <Text style={styles.htitle}>{trn.format} • {trn.overs} overs</Text>
+          <Text style={styles.htitle}>{trn.overs} overs per match</Text>
           <View style={{ width: 36 }} />
         </View>
         <View style={styles.heroContent}>
@@ -180,11 +180,11 @@ export default function TournamentDetail() {
               </View>
               <View style={styles.scoreLine}>
                 <Text style={styles.smallTeam}>{m.team_a_name}</Text>
-                <Text style={styles.smallScore}>{m.innings_a.runs}/{m.innings_a.wickets} ({m.innings_a.overs})</Text>
+                <Text style={styles.smallScore}>{m.innings_a.runs}/{m.innings_a.wickets} ({Math.floor((m.innings_a.balls || 0) / 6)}.{(m.innings_a.balls || 0) % 6})</Text>
               </View>
               <View style={styles.scoreLine}>
                 <Text style={styles.smallTeam}>{m.team_b_name}</Text>
-                <Text style={styles.smallScore}>{m.innings_b.runs}/{m.innings_b.wickets} ({m.innings_b.overs})</Text>
+                <Text style={styles.smallScore}>{m.innings_b.runs}/{m.innings_b.wickets} ({Math.floor((m.innings_b.balls || 0) / 6)}.{(m.innings_b.balls || 0) % 6})</Text>
               </View>
             </Pressable>
           ))

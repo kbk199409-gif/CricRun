@@ -94,17 +94,23 @@ export default function Login() {
     return () => { sub.remove(); };
   }, [processSessionId]);
 
+  const [sendErr, setSendErr] = useState("");
   const sendOtp = async () => {
     if (phone.trim().length < 10) return;
-    setSending(true);
+    setSending(true); setSendErr("");
     try {
-      await fetch(`${API}/api/auth/phone/send`, {
+      const r = await fetch(`${API}/api/auth/phone/send`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ phone: `+91${phone.trim()}` }),
       });
-      router.push({ pathname: "/otp", params: { phone: `+91${phone.trim()}` } });
-    } catch {}
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) {
+        router.push({ pathname: "/otp", params: { phone: `+91${phone.trim()}`, devCode: j.dev_code || "" } });
+      } else {
+        setSendErr(j.detail || "Failed to send OTP");
+      }
+    } catch { setSendErr("Network error"); }
     setSending(false);
   };
 
@@ -172,6 +178,7 @@ export default function Login() {
                 </>
               )}
             </Pressable>
+            {sendErr ? <Text testID="send-otp-error" style={{ color: colors.error, marginTop: 8, textAlign: "center" }}>{sendErr}</Text> : null}
 
             <View style={styles.divider}>
               <View style={styles.divLine} />

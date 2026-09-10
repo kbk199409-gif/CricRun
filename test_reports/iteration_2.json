@@ -1,0 +1,35 @@
+{
+  "summary": "Full re-test of CricTrack after major fixes (real OTP, user search + team linking, tournament without format, ball-by-ball scoring with strict cricket rules). All 14 backend pytest cases pass (100%). Frontend mobile E2E verified: home -> phone -> dev-mode OTP hint (testID=dev-otp-hint) -> verify -> profile-setup -> home. Match Create screen shows NO T20/ODI/T10 chips, only overs presets (5/6/8/10/12/15/20) + custom input, and the primary button correctly reads 'Confirm & Set Openers' (routes to /matches/{id}/setup before scoring). Tournament Create shows no format chips either. No deprecated Expo packages detected. No regressions.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "OTP flow is correct: dev_code is returned only when OTP_DEV_MODE=true; TTL 5m, 5-attempt limit, 30s resend cooldown, OTP is deleted on successful verify.",
+    "Ball-by-ball logic is cricket-correct: wide/no_ball don't count legal balls; +1 team run added; strike rotates on odd runs (including bye/leg_bye); end-of-over swaps strike + sets needs_new_bowler; innings auto-completes at balls>=overs*6 or 10 wickets or target reached; match auto-completes with winner + result_text after 2nd innings.",
+    "start_innings validates striker/non-striker in batting team, bowler in bowling team, and rejects same player for both crease slots.",
+    "add_player rejects duplicate registered users on the same team; deleting a player uses $pull and returns 404 if not found.",
+    "Tournament payload no longer stores 'format' - only overs + optional start_date/end_date; NRR calc unchanged and correct.",
+    "No MongoDB _id leaks (all reads project {_id:0}); env vars used correctly; testIDs present on all interactive elements."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (rewritten with 14 tests covering OTP dev_code, user search, team linking, tournament-no-format, and full ball-by-ball scoring: extras, wickets, over-end, auto-completion)."
+  ],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "100% of the requested flows (OTP dev-hint, no format chips, overs presets, custom overs input)"},
+  "seed_data_creation": "Ephemeral: several TEST_-prefixed users/teams/matches/tournaments created via pytest against the live preview DB. Namespaced; safe to leave.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend suite lives at /app/backend/tests/backend_test.py. Run with: EXPO_PUBLIC_BACKEND_URL=<url> pytest backend/tests/backend_test.py -o addopts='' -v (override addopts to disable xdist duplicate module fixtures). Fixture 'match_ctx' creates a 5-over match with 4 players per team; the TestMatchScoring class must run in file order (which pytest does by default) because tests share the same match state. All ball-recording endpoints require Authorization header; use the fixture helper _signup() which uses dev_code. Frontend requires a mobile viewport (375x667). Login via /: phone -> Send OTP -> read 'Dev mode: your OTP is XXXXXX' hint (testID='dev-otp-hint') -> fill otp-0..otp-5 -> verify-btn. For profile-setup click chips by text ('Right Hand', 'Fast', 'Batsman') then save-profile-btn.",
+  "rca_of_issue": "N/A - no regressions or bugs found in this iteration. Previous iteration's email-index bug remains fixed on this preview."
+}

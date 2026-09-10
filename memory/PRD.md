@@ -4,46 +4,42 @@
 A CricHeroes-style Expo mobile app for scoring cricket matches, managing teams and tournaments, and tracking player profiles.
 
 ## Users
-- Casual/club cricket players and organizers who want to score matches ball-by-ball, form teams, run mini-tournaments, and see a live points table with NRR.
+Casual/club cricket players and organizers who want to score matches ball-by-ball, form teams from other CricTrack users, run mini-tournaments, and see a live points table with NRR.
 
-## MVP Feature Set (Implemented)
+## Feature Set
 
 ### Auth
-- Phone + 6-digit OTP (mock — any 6 digits accepted)
-- Emergent-managed Google Sign-In
-- 7-day session tokens stored in `expo-secure-store` (mobile) / `localStorage` (web)
+- **Phone OTP (real)** — 6-digit code, 5-minute TTL, 5-attempt lockout, 30s resend cooldown. Dev preview returns `dev_code` in the API response and shows it on the OTP screen; production sends via SMS.
+- Emergent-managed Google Sign-In.
+- 7-day session tokens in `expo-secure-store` / `localStorage`.
 
 ### Profile
-- Name, profile picture (uploaded to Emergent Object Storage)
-- Batting style: Right / Left hand
-- Bowling style: Fast / Medium / Spinner / None
-- Playing role: Batsman / Bowler / All-rounder / Wicketkeeper
+- Name, profile picture (Emergent Object Storage), batting hand, bowling style, playing role.
 
 ### Teams
-- Create team (name + short code)
-- Add players (name)
-
-### Matches
-- Create match between two of your teams, set overs
-- Live scoring: quick tap runs (0/1/2/3/4/6), wicket, +1 extra, next ball
-- Toggle current batting innings
-- End match — winner auto-computed from scores
+- Create team (name + short code).
+- Add player by searching registered CricTrack users (name/phone/email) OR add a guest by name.
+- Registered users keep the SAME player identity (linked by `user_id`) across all teams — stats will roll up to them.
+- Duplicate registered users on a team are blocked. Owner can remove players.
 
 ### Tournaments
-- Create tournament (name, format, overs)
-- Add teams from your team list
-- Attach matches to the tournament
-- Points Table with NRR auto-computed after matches complete
+- Create with name, location (optional), start/end date (optional), and overs per match — **no T20/ODI/T10 classification**.
+- Add teams. Attach matches. Points Table with auto NRR.
+
+### Matches (Cricket Rules)
+- Create with two teams + overs (preset 5/6/8/10/12/15/20 or custom).
+- **Setup screen enforces striker, non-striker, opening bowler before any ball can be scored.**
+- Ball input: runs (0/1/2/3/4/6) with extra type (Off Bat / Wide / No Ball / Bye / Leg Bye) + wicket toggle + swap-strike button.
+- Wide & No Ball don't count as legal balls; each adds +1 to team runs.
+- End-of-over auto-swaps strike and prompts for the next bowler.
+- Wicket auto-prompts for the incoming batsman.
+- Innings auto-ends at overs limit OR all-out OR (2nd innings) target reached.
+- Match auto-ends with `winner_team_id` and human-readable `result_text` (e.g. "Mumbai won by 12 runs").
 
 ## Tech Stack
-- Frontend: Expo SDK 57, expo-router, react-native-safe-area-context, expo-image-picker, expo-haptics, `@react-native-vector-icons/ionicons`, expo-linear-gradient
-- Backend: FastAPI + Motor (MongoDB async)
-- Integrations: Emergent Google Auth, Emergent Object Storage
-
-## Design
-Blue/white sporty theme (per user choice). Design tokens live in `/app/frontend/src/theme.ts`; guidelines in `/app/design_guidelines.json`.
+Expo SDK 57, expo-router, FastAPI + Motor, Emergent Google Auth, Emergent Object Storage.
 
 ## Future / Next
-- Ball-by-ball log & stats per player
-- Man of the match, live viewer share link
-- Push notifications for tournament updates (native build only)
+- Ball-by-ball history & individual player stats (rolled up to `user_id`)
+- Man of the Match, live public share link
+- Wagon Wheel visualization
