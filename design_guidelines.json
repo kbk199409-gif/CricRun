@@ -1,0 +1,186 @@
+{
+  "app_name": "CricTrack",
+  "personality": "1 iOS-Native Clean (Adapted with high-utility structural elements for sports scoring)",
+  "personality_one_liner": "A crisp, authoritative, and fast-paced sports command center that balances legible data density with a clean, stadium-ready aesthetic.",
+  "color": {
+    "surface": "#FFFFFF",
+    "onSurface": "#0F172A",
+    "surfaceSecondary": "#F8FAFC",
+    "onSurfaceSecondary": "#0F172A",
+    "surfaceTertiary": "#F1F5F9",
+    "onSurfaceTertiary": "#334155",
+    "surfaceInverse": "#0F172A",
+    "onSurfaceInverse": "#FFFFFF",
+    "brand": "#1D4ED8",
+    "brandPrimary": "#2563EB",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#DBEAFE",
+    "onBrandSecondary": "#1E40AF",
+    "brandTertiary": "#EFF6FF",
+    "onBrandTertiary": "#1D4ED8",
+    "success": "#16A34A",
+    "onSuccess": "#FFFFFF",
+    "warning": "#EAB308",
+    "onWarning": "#FFFFFF",
+    "error": "#DC2626",
+    "onError": "#FFFFFF",
+    "info": "#0284C7",
+    "onInfo": "#FFFFFF",
+    "border": "#E2E8F0",
+    "borderStrong": "#CBD5E1",
+    "divider": "#F1F5F9",
+    "muted": "#64748B",
+    "onBrand": "#FFFFFF"
+  },
+  "typography": {
+    "displayFontFamily": "Space Grotesk",
+    "textFontFamily": "Plus Jakarta Sans",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24,
+      "3xl": 32,
+      "4xl": 48
+    }
+  },
+  "spacing": {
+    "rule": "Generous outer padding (lg/xl) with tight coupling inside cards (xs/sm). Use distinct horizontal dividers for lists instead of heavy card shadows.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 16,
+    "pill": 999
+  },
+  "shadow_tier": 1,
+  "navigation": "bottom_tabs",
+  "icon_set": "Ionicons",
+  "glassmorphism": {
+    "enabled": true,
+    "do's": [
+      "Use glass effect on sticky headers over scrolling match feeds",
+      "Apply to the bottom tab bar to let match content scroll behind elegantly",
+      "Use over hero stadium imagery for featured tournaments"
+    ],
+    "dont's": [
+      "Never apply glass to the live scoreboard block—it needs maximum contrast and clarity",
+      "Do not use on data-heavy tables like the points table"
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Auth",
+      "purpose": "Onboard users with Phone OTP and Google login (mocked).",
+      "states": {
+        "loading": "Spinner over disabled inputs.",
+        "empty": "N/A",
+        "error": "Inline text below input for invalid OTP."
+      },
+      "layout": "Full-bleed hero image of a stadium or cricket pitch at the top (with gradient scrim). Large clean title (Space Grotesk). Large, easy-to-tap inputs and a sticky primary CTA for OTP verification. Secondary button for Google Auth."
+    },
+    {
+      "name": "Profile Setup",
+      "purpose": "Capture user's cricket playing style (Batting/Bowling).",
+      "states": {
+        "loading": "Spinner on submit.",
+        "empty": "N/A",
+        "error": "Toast or inline validation."
+      },
+      "layout": "Form view. Use segmented controls/pills for 'Batting Style' (Right/Left Hand) and 'Bowling Style' (Pacer/Spinner/Medium). Large round avatar picker component. Sticky 'Save Profile' button at bottom."
+    },
+    {
+      "name": "Home / Match Feed",
+      "purpose": "Discover live, upcoming, and completed matches and tournaments.",
+      "states": {
+        "loading": "Skeleton cards of match previews.",
+        "empty": "Illustration of an empty stadium with CTA 'Create a Match'.",
+        "error": "Failed to load feed with 'Retry' button."
+      },
+      "layout": "Sticky glass header. Horizontal scrolling list of 'Live Match' cards at the top. Vertical list of recent matches below. Match cards use a 2-column layout (Team A vs Team B) with team logos and prominent scores. Use 'brandPrimary' for Live indicators."
+    },
+    {
+      "name": "Live Match Scoring (Command Center)",
+      "purpose": "Allow scorers to input ball-by-ball events and viewers to track stats.",
+      "states": {
+        "loading": "Skeleton scoreboard.",
+        "empty": "Match hasn't started -> 'Start 1st Innings' CTA.",
+        "error": "Connection lost banner."
+      },
+      "layout": "Top half: Fixed scoreboard (surfaceInverse or brand) displaying Runs/Wickets, Overs, and CRR in huge Space Grotesk font. Middle: Current batter and bowler stats in a clean table layout. Bottom: A sticky control panel (bottom sheet) for the scorer with large pill buttons for Runs (0, 1, 2, 4, 6), Wicket, Extras (WD, NB)."
+    },
+    {
+      "name": "Tournament Dashboard",
+      "purpose": "Manage tournament details, view matches, and check the points table.",
+      "states": {
+        "loading": "Skeleton rows.",
+        "empty": "No teams joined yet.",
+        "error": "Failed to load tournament data."
+      },
+      "layout": "Hero banner with tournament trophy image and title. Sticky segmented control (Matches | Teams | Points Table) below. Points Table tab: a data grid showing Team, P, W, L, Pts, and NRR. High contrast, mono-spaced numbers for stats. Highlight top 4 teams with subtle surfaceSecondary background."
+    },
+    {
+      "name": "Profile / Stats",
+      "purpose": "View user's personal cricket career stats and teams.",
+      "states": {
+        "loading": "Skeleton avatar and stat blocks.",
+        "empty": "No matches played yet.",
+        "error": "Failed to load profile."
+      },
+      "layout": "Profile banner with user avatar overlapping a generic stadium background. Name and Role (e.g., 'Right Hand Bat • Off Spinner') in tags. Grid of key stats: Matches, Runs, Strike Rate, Wickets, Economy. Section below for 'My Teams'."
+    }
+  ],
+  "images": {
+    "hero_stadium": {
+      "url": "https://images.unsplash.com/photo-1594470117722-de4b9a02ebed?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Njl8MHwxfHNlYXJjaHwxfHxjcmlja2V0JTIwc3RhZGl1bSUyMGxpZ2h0c3xlbnwwfHx8fDE3ODkwMzIwOTl8MA&ixlib=rb-4.1.0&q=85",
+      "dark": "https://images.unsplash.com/photo-1730739463889-34c7279277a9?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Njl8MHwxfHNlYXJjaHwyfHxjcmlja2V0JTIwc3RhZGl1bSUyMGxpZ2h0c3xlbnwwfHx8fDE3ODkwMzIwOTl8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Cricket stadium lights at night"
+    },
+    "hero_tournament": {
+      "url": "https://images.unsplash.com/photo-1637635753380-20bf6f46ede0?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxNzV8MHwxfHNlYXJjaHwxfHxjcmlja2V0JTIwdG91cm5hbWVudCUyMHRyb3BoeXxlbnwwfHx8fDE3ODkwMzIxMTR8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Cricket tournament trophy on a green field"
+    },
+    "generic_team_logo": {
+      "url": "https://images.unsplash.com/flagged/photo-1568407371446-a239664fb4f4?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2MzR8MHwxfHNlYXJjaHwxfHxnZW5lcmljJTIwc3BvcnRzJTIwdGVhbSUyMGxvZ28lMjBwbmd8ZW58MHx8fHwxNzg5MDMyMTE0fDA&ixlib=rb-4.1.0&q=85",
+      "alt": "Generic sports team generic image"
+    },
+    "empty_stadium": {
+      "url": "https://images.unsplash.com/photo-1522778526097-ce0a22ceb253?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MDV8MHwxfHNlYXJjaHwxfHxlbXB0eSUyMHN0YWRpdW18ZW58MHx8fHwxNzg5MDMyMTE0fDA&ixlib=rb-4.1.0&q=85",
+      "alt": "Empty stadium seating during daytime"
+    },
+    "player_action": {
+      "url": "https://images.unsplash.com/photo-1595210382266-2d0077c1f541?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NDh8MHwxfHNlYXJjaHwyfHxjcmlja2V0JTIwcGxheWVyJTIwYWN0aW9ufGVufDB8fHx8MTc4OTAzMjA5OXww&ixlib=rb-4.1.0&q=85",
+      "alt": "Cricket batsman hitting a shot"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Strictly adhere to the 'Blue/white clean sporty theme' requested by the user, utilizing the provided brandPrimary (#2563EB) and pristine white surfaces.",
+    "Implement the 'Space Grotesk' font for all numeric readouts, particularly the live scoreboard, over trackers, and points table. This is critical for the 'sports command center' feel.",
+    "For the 'Live Match Scoring' screen, build a persistent, fixed top section for the overall score, and use a bottom sheet or a fixed grid at the bottom for scorer inputs (runs, wickets, extras) so the scorer doesn't have to scroll to update the match.",
+    "In the Tournament Dashboard, the Points Table must be a horizontally scrollable or neatly packed grid showing Team, P, W, L, Pts, and NRR. Use fixed widths for columns to ensure alignment.",
+    "For Profile setup, use custom selectable pills (styled with brandTertiary and brand border when active) for 'Batting Style' and 'Bowling Style' instead of standard dropdowns.",
+    "Authentication flow should be mocked (UI only) but should feel native, using the hero_stadium image with a vertical gradient scrim (transparent to surfaceInverse) at the top.",
+    "Images placed as card covers or headers MUST utilize the gradient scrim strategy specified in the <Imagery_and_Texture> rules for optimal text legibility.",
+    "All interactive elements (Scoring buttons, Tab swaps, Team additions) should include haptic feedback."
+  ]
+}

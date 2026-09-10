@@ -1,0 +1,43 @@
+{
+  "summary": "Tested CricTrack backend (10/10 pytest passing) and frontend E2E on mobile viewport. Discovered and fixed 1 critical backend bug: unique-sparse email index blocked 2nd phone-only signup. Frontend flows verified end-to-end: login -> OTP -> profile setup -> matches tab -> team creation (x2) -> match creation -> live scoring (4/6/1/wicket/undo) -> innings switch -> match completed -> tournament creation & detail. No deprecated Expo packages detected. testIDs present on all interactive elements.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/auth/phone/verify (users collection index)",
+        "issue": "FIXED: Unique+sparse index on 'email' rejected phone signups after the first because User model inserts email:null (sparse only ignores absent fields, not null values). Replaced with partialFilterExpression {email: {$type:'string'}}. server.py:517-524.",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "None critical. Optional cleanup: existing DBs may still have the old email_1 index; server.py now drops it on startup, but confirm on fresh deploys the partialFilterExpression index is used.",
+    "Minor UX: On tournament detail 'Teams' tab, the query selector [data-testid^='add-'] also matches 'add-match-btn' and 'add-team-tournament-btn'. Not a bug; tests should use exact prefixes 'add-<team_id>' when clicking team-add buttons."
+  ],
+  "critical_code_review_comments": [
+    "server.py auth: sparse unique index on nullable field was a footgun (now fixed to partialFilterExpression).",
+    "server.py has no ObjectId leak (all reads use projection {_id:0}).",
+    "MatchComplete auto-picks winner correctly by comparing innings runs; handles tie -> null winner.",
+    "NRR calculation correctly caps balls at overs*6 when all-out (10 wickets)."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (email index: sparse -> partialFilterExpression)",
+    "/app/backend/tests/backend_test.py (created)"
+  ],
+  "success_rate": {"backend": "100% (10/10)", "frontend": "100% of critical flows (login, otp, profile, teams, match, scoring, tournament creation)"},
+  "seed_data_creation": "Ephemeral: created TEST_ prefixed users/teams/tournaments/matches during pytest and E2E flows. Not cleaned up but namespaced.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend fully covered by /app/backend/tests/backend_test.py — run with `pytest backend/tests/backend_test.py -o addopts=''` (project pytest.ini enables xdist which causes duplicate module-scoped fixtures; override addopts when running). Frontend E2E script logic in this iteration was reliable; use direct URLs (/teams/create, /matches/create, /tournaments/create) to bypass tab-nav flakiness. Only real bug found (email unique index) is already fixed and validated.",
+  "rca_of_issue": "RCA: startup created `db.users.create_index('email', unique=True, sparse=True)`. Sparse unique means duplicate nulls are OK ONLY if the field is missing; when the field is present with value null (as happens for phone signups where Pydantic serializes Optional[str]=None to null), the second insert triggers E11000 duplicate key on {email:null}. Repro: sign up two different phone numbers -> 2nd returns 500. Fix: drop old index, create partial index with partialFilterExpression={'email':{'$type':'string'}} so only real string emails participate. Validated by 10/10 pytest + E2E flow creating fresh phone user successfully."
+}
