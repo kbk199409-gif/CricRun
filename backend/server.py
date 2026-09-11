@@ -378,12 +378,40 @@ async def list_teams(authorization: Optional[str] = Header(None)):
     return {"teams": teams}
 
 
+async def _enrich_team_players(team: Optional[dict]) -> Optional[dict]:
+    """Hydrate each player's latest profile picture / styles from the users collection.
+    Team.players stores a SNAPSHOT at add-time; if the user updates their profile pic later,
+    we still want the latest photo to show everywhere. Guests (no user_id) are untouched."""
+    if not team:
+        return team
+    players = team.get("players") or []
+    user_ids = [p["user_id"] for p in players if p.get("user_id")]
+    if not user_ids:
+        return team
+    users = await db.users.find({"user_id": {"$in": user_ids}}, {"_id": 0}).to_list(500)
+    umap = {u["user_id"]: u for u in users}
+    for p in players:
+        uid = p.get("user_id")
+        if uid and uid in umap:
+            u = umap[uid]
+            # Always overwrite from source of truth
+            p["name"] = u.get("name") or p.get("name") or "Player"
+            p["profile_picture_path"] = u.get("profile_picture_path")
+            p["picture"] = u.get("picture")
+            p["batting_style"] = u.get("batting_style") or p.get("batting_style")
+            p["bowling_style"] = u.get("bowling_style") or p.get("bowling_style")
+            p["role"] = u.get("role") or p.get("role")
+    team["players"] = players
+    return team
+
+
 @api_router.get("/teams/{team_id}")
 async def get_team(team_id: str, authorization: Optional[str] = Header(None)):
     await get_user_from_token(authorization)
     team = await db.teams.find_one({"team_id": team_id}, {"_id": 0})
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
+    team = await _enrich_team_players(team)
     return {"team": team}
 
 
@@ -565,7 +593,7 @@ def _ensure_batter(innings: dict, pid: str) -> dict:
 def _ensure_bowler(innings: dict, pid: str) -> dict:
     b = innings["bowlers"].get(pid)
     if not b:
-        b = {"balls": 0, "runs": 0, "wickets": 0, "extras": 0}
+        b = {"balls": 0, "runs": 0, "wickets": 0, "extras": 0, "maidens": 0}
         innings["bowlers"][pid] = b
     return b
 
@@ -813,6 +841,23 @@ async def record_ball(match_id: str, side: str, payload: BallInput, authorizatio
 
     # Handle new batsman if pending
     if innings.get("needs_new_batsman"):
+        # SAFETY: if the innings is really already at all-out (or over-limit), auto-complete.
+        # This prevents any UI-driven freeze from a lingering needs_new_batsman flag.
+        if int(innings.get("wickets") or 0) >= 10 or int(innings.get("balls") or 0) >= max_balls:
+            innings["needs_new_batsman"] = False
+            innings["needs_new_bowler"] = False
+            innings["completed"] = True
+            await db.matches.update_one({"match_id": match_id}, {"$set": {field: innings}})
+            return {"match": await db.matches.find_one({"match_id": match_id}, {"_id": 0})}
+        # If no eligible batsmen remain (everyone dismissed), auto-complete.
+        dismissed = set(innings.get("dismissed_ids") or [])
+        remaining = [pid for pid in bat_players.keys() if pid not in dismissed and pid != innings.get("striker_id") and pid != innings.get("non_striker_id")]
+        if not remaining:
+            innings["needs_new_batsman"] = False
+            innings["needs_new_bowler"] = False
+            innings["completed"] = True
+            await db.matches.update_one({"match_id": match_id}, {"$set": {field: innings}})
+            return {"match": await db.matches.find_one({"match_id": match_id}, {"_id": 0})}
         if not payload.new_batsman_id:
             raise HTTPException(status_code=400, detail="Select the new batsman first")
         if payload.new_batsman_id not in bat_players:
@@ -866,12 +911,33 @@ async def record_ball(match_id: str, side: str, payload: BallInput, authorizatio
 
     # Determine strike rotation & over end
     legal = extra not in ("wide", "no_ball")
-    rotate_on_runs = (runs % 2 == 1)  # for all extras: bye/lb/none/wide/nb — odd runs rotate strike
+    rotate_on_runs = (runs % 2 == 1)
 
-    # Over end swap first, then rotate-on-runs to keep semantics of "run then over".
-    if legal and innings["balls"] % 6 == 0 and innings["balls"] < max_balls:
-        _rotate_strike(innings)
-        innings["needs_new_bowler"] = True
+    # End of over: swap strike + record maiden + require new bowler (unless last ball of innings)
+    if legal and innings["balls"] % 6 == 0:
+        # Maiden detection: last 6 legal balls by this bowler in this over
+        bowler_id = ball.get("bowler_at_ball")
+        if bowler_id:
+            # scan events backwards to collect this over's legal balls
+            over_runs = 0
+            legal_count = 0
+            for ev in reversed(innings["events"] + [ball]):
+                if legal_count >= 6:
+                    break
+                if ev.get("extra_type") in ("wide", "no_ball"):
+                    over_runs += int(ev.get("runs", 0)) + 1  # bowler still charged for wd/nb
+                    # not a legal ball, keep scanning
+                else:
+                    legal_count += 1
+                    # bowler-attributed runs: none/wide/nb (but not byes/leg-byes)
+                    if ev.get("extra_type") == "none":
+                        over_runs += int(ev.get("runs", 0))
+            if over_runs == 0 and legal_count == 6:
+                bw = _ensure_bowler(innings, bowler_id)
+                bw["maidens"] = int(bw.get("maidens") or 0) + 1
+        if innings["balls"] < max_balls:
+            _rotate_strike(innings)
+            innings["needs_new_bowler"] = True
 
     if rotate_on_runs and not payload.wicket:
         _rotate_strike(innings)
@@ -882,22 +948,20 @@ async def record_ball(match_id: str, side: str, payload: BallInput, authorizatio
     # End innings conditions
     all_out = innings["wickets"] >= 10
     overs_done = innings["balls"] >= max_balls
-    if side == "b":
-        # Target reached (chase completed)
-        # Note: side "b" here means innings_b, but the actual chasing side depends on toss.
-        # We compute target from the OTHER innings.
-        other_runs = match["innings_a"]["runs"]
-        if innings["runs"] > other_runs:
+    # Chase completion — only when the OTHER innings has already completed (i.e. this is the 2nd innings)
+    other_field_local = "innings_b" if field == "innings_a" else "innings_a"
+    other_local = match[other_field_local]
+    if other_local.get("started") and other_local.get("completed"):
+        if innings["runs"] > int(other_local.get("runs") or 0):
             innings["completed"] = True
-    else:
-        # side "a": 2nd innings might be innings_a in tosses where B batted first.
-        # Symmetric: if other innings is completed, check target.
-        other = match["innings_b"]
-        if other.get("completed") and other.get("started"):
-            if innings["runs"] > int(other["runs"]):
-                innings["completed"] = True
     if all_out or overs_done:
         innings["completed"] = True
+
+    # CRITICAL: when innings completes, clear pending flags so subsequent frontend loads
+    # do not open picker modals against a closed innings.
+    if innings["completed"]:
+        innings["needs_new_batsman"] = False
+        innings["needs_new_bowler"] = False
 
     innings["last_ball"] = {k: ball[k] for k in ("runs","extra_type","wicket","out_type","fielder_id","at")}
     innings["events"].append(ball)
@@ -923,6 +987,15 @@ async def record_ball(match_id: str, side: str, payload: BallInput, authorizatio
         updates["status"] = "completed"
         updates["winner_team_id"] = winner
         updates["result_text"] = text
+        # Auto Man of the Match if not already set manually
+        if not match.get("man_of_the_match_id"):
+            match_snapshot = {**match, field: innings}
+            match_snapshot[other_field] = other_innings
+            mom = _compute_mom(match_snapshot)
+            if mom:
+                updates["man_of_the_match_id"] = mom["player_id"]
+                updates["man_of_the_match_team_id"] = mom["team_id"]
+                updates["man_of_the_match_summary"] = _player_perf_summary(match_snapshot, mom["player_id"])
     elif innings["completed"] and not other_innings.get("started"):
         # First innings just completed — flip current_innings to the other side
         updates["current_innings"] = "b" if field == "innings_a" else "a"
@@ -931,7 +1004,74 @@ async def record_ball(match_id: str, side: str, payload: BallInput, authorizatio
     return {"match": await db.matches.find_one({"match_id": match_id}, {"_id": 0})}
 
 
-@api_router.post("/matches/{match_id}/innings/{side}/undo")
+def _compute_mom(match: dict) -> Optional[Dict[str, str]]:
+    """Score each player: bat_impact + bowl_impact + fielding. Higher = better."""
+    scores: Dict[str, Dict[str, Any]] = {}  # player_id -> {score, team_id}
+    for side, team_id in (("innings_a", match["team_a_id"]), ("innings_b", match["team_b_id"])):
+        inn = match.get(side) or {}
+        # Batting
+        for pid, st in (inn.get("batters") or {}).items():
+            runs = int(st.get("runs") or 0)
+            balls = int(st.get("balls") or 0)
+            fours = int(st.get("fours") or 0)
+            sixes = int(st.get("sixes") or 0)
+            # Points: runs + 4*fours + 6*sixes + SR bonus (per run above 100 SR)
+            sr_bonus = 0
+            if balls >= 5:
+                sr_bonus = int(max(0, (runs / balls * 100 - 100)) / 2)
+            impact = runs + fours * 2 + sixes * 4 + sr_bonus
+            scores.setdefault(pid, {"score": 0, "team_id": team_id})
+            scores[pid]["score"] += impact
+    # Bowling & fielding from OPPOSITE innings (bowlers are opposing team)
+    for side, bowl_team_id in (("innings_a", match["team_b_id"]), ("innings_b", match["team_a_id"])):
+        inn = match.get(side) or {}
+        for pid, st in (inn.get("bowlers") or {}).items():
+            wkts = int(st.get("wickets") or 0)
+            balls = int(st.get("balls") or 0)
+            runs = int(st.get("runs") or 0)
+            maidens = int(st.get("maidens") or 0)
+            econ_bonus = 0
+            if balls >= 6:
+                econ = runs / (balls / 6)
+                econ_bonus = int(max(0, (7 - econ) * 3))  # under 7 econ gets bonus
+            impact = wkts * 25 + maidens * 8 + econ_bonus
+            scores.setdefault(pid, {"score": 0, "team_id": bowl_team_id})
+            scores[pid]["score"] += impact
+        # Fielding: catches/run outs/stumpings — from `batters.fielder_id` in the opposite (batting) innings
+        # (The batting innings records who dismissed the batter.)
+    # Fielding pass
+    for side, bowl_team_id in (("innings_a", match["team_b_id"]), ("innings_b", match["team_a_id"])):
+        inn = match.get(side) or {}
+        for st in (inn.get("batters") or {}).values():
+            fid = st.get("fielder_id")
+            if not fid: continue
+            ot = st.get("out_type")
+            pts = 10 if ot == "catch_out" else 15 if ot == "run_out" else 20 if ot == "stumped" else 0
+            scores.setdefault(fid, {"score": 0, "team_id": bowl_team_id})
+            scores[fid]["score"] += pts
+
+    if not scores:
+        return None
+    best_pid, best = max(scores.items(), key=lambda kv: kv[1]["score"])
+    if best["score"] <= 0:
+        return None
+    return {"player_id": best_pid, "team_id": best["team_id"], "score": best["score"]}
+
+
+def _player_perf_summary(match: dict, player_id: str) -> str:
+    parts = []
+    for side in ("innings_a", "innings_b"):
+        inn = match.get(side) or {}
+        bat = (inn.get("batters") or {}).get(player_id)
+        if bat and (int(bat.get("balls") or 0) > 0):
+            parts.append(f"{bat.get('runs',0)} runs")
+        bowl = (inn.get("bowlers") or {}).get(player_id)
+        if bowl and int(bowl.get("balls") or 0) > 0:
+            parts.append(f"{bowl.get('wickets',0)}/{bowl.get('runs',0)}")
+    return " • ".join(parts) if parts else ""
+
+
+
 async def undo_ball(match_id: str, side: str, authorization: Optional[str] = Header(None)):
     if side not in ("a", "b"):
         raise HTTPException(status_code=400, detail="Invalid side")
@@ -973,6 +1113,259 @@ async def complete_match(match_id: str, authorization: Optional[str] = Header(No
     return {"match": await db.matches.find_one({"match_id": match_id}, {"_id": 0})}
 
 
+# ============ DELETE MATCH ============
+@api_router.delete("/matches/{match_id}")
+async def delete_match(match_id: str, authorization: Optional[str] = Header(None)):
+    user = await get_user_from_token(authorization)
+    m = await db.matches.find_one({"match_id": match_id}, {"_id": 0})
+    if not m:
+        raise HTTPException(status_code=404, detail="Match not found")
+    if m["owner_id"] != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Only the match creator can delete it")
+    await db.matches.delete_one({"match_id": match_id})
+    return {"success": True}
+
+
+# ============ PLAYER STATS ============
+def _accumulate_batting(agg: dict, st: dict) -> None:
+    agg["innings"] += 1
+    runs = int(st.get("runs") or 0)
+    balls = int(st.get("balls") or 0)
+    agg["runs"] += runs
+    agg["balls"] += balls
+    agg["fours"] += int(st.get("fours") or 0)
+    agg["sixes"] += int(st.get("sixes") or 0)
+    if not st.get("out_type"):
+        agg["not_outs"] += 1
+    if runs >= 100: agg["hundreds"] += 1
+    elif runs >= 50: agg["fifties"] += 1
+    if runs > agg["highest"]:
+        agg["highest"] = runs
+
+
+def _accumulate_bowling(agg: dict, st: dict) -> None:
+    balls = int(st.get("balls") or 0)
+    runs = int(st.get("runs") or 0)
+    wkts = int(st.get("wickets") or 0)
+    if balls == 0: return
+    agg["innings"] += 1
+    agg["balls"] += balls
+    agg["runs"] += runs
+    agg["wickets"] += wkts
+    agg["maidens"] += int(st.get("maidens") or 0)
+    if wkts > agg["best_w"] or (wkts == agg["best_w"] and (agg["best_w"] > 0 and runs < agg["best_r"])):
+        agg["best_w"] = wkts
+        agg["best_r"] = runs
+
+
+@api_router.get("/players/{user_id}/stats")
+async def player_stats(user_id: str, authorization: Optional[str] = Header(None)):
+    await get_user_from_token(authorization)
+    return await _player_stats_data(user_id)
+
+
+async def _player_stats_data(user_id: str) -> Dict[str, Any]:
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    # Find teams the user belongs to
+    teams = await db.teams.find({"players.user_id": user_id}, {"_id": 0}).to_list(500)
+    # Map team_id -> the player_id used to represent this user in that team
+    team_pid: Dict[str, str] = {}
+    for t in teams:
+        for p in t.get("players", []):
+            if p.get("user_id") == user_id:
+                team_pid[t["team_id"]] = p["player_id"]
+                break
+    if not team_pid:
+        return {"user": user, "stats": {
+            "matches": 0,
+            "batting": {"innings": 0, "runs": 0, "balls": 0, "fours": 0, "sixes": 0, "highest": 0, "fifties": 0, "hundreds": 0, "not_outs": 0, "average": 0, "strike_rate": 0},
+            "bowling": {"innings": 0, "balls": 0, "runs": 0, "wickets": 0, "maidens": 0, "best_w": 0, "best_r": 0, "economy": 0, "average": 0, "strike_rate": 0},
+            "fielding": {"catches": 0, "run_outs": 0, "stumpings": 0},
+            "mom_awards": 0,
+        }}
+    matches = await db.matches.find(
+        {"status": "completed", "$or": [{"team_a_id": {"$in": list(team_pid.keys())}}, {"team_b_id": {"$in": list(team_pid.keys())}}]},
+        {"_id": 0},
+    ).to_list(1000)
+
+    bat = {"innings": 0, "runs": 0, "balls": 0, "fours": 0, "sixes": 0, "highest": 0, "fifties": 0, "hundreds": 0, "not_outs": 0}
+    bowl = {"innings": 0, "balls": 0, "runs": 0, "wickets": 0, "maidens": 0, "best_w": 0, "best_r": 0}
+    field = {"catches": 0, "run_outs": 0, "stumpings": 0}
+    mom_awards = 0
+    match_count = 0
+
+    for m in matches:
+        pid_a = team_pid.get(m["team_a_id"])
+        pid_b = team_pid.get(m["team_b_id"])
+        pid_this = pid_a or pid_b
+        if not pid_this:
+            continue
+        match_count += 1
+        # Batting: check both innings for this pid
+        for side in ("innings_a", "innings_b"):
+            inn = m.get(side) or {}
+            b = (inn.get("batters") or {}).get(pid_this)
+            if b:
+                _accumulate_batting(bat, b)
+            # Fielding events: scan opponent's batters for this player's fielder_id (if opponent innings)
+            for st in (inn.get("batters") or {}).values():
+                if st.get("fielder_id") == pid_this:
+                    ot = st.get("out_type")
+                    if ot == "catch_out": field["catches"] += 1
+                    elif ot == "run_out": field["run_outs"] += 1
+                    elif ot == "stumped": field["stumpings"] += 1
+        # Bowling: check both innings for this pid
+        for side in ("innings_a", "innings_b"):
+            inn = m.get(side) or {}
+            b = (inn.get("bowlers") or {}).get(pid_this)
+            if b:
+                _accumulate_bowling(bowl, b)
+        if m.get("man_of_the_match_id") == pid_this:
+            mom_awards += 1
+
+    bat_avg = round(bat["runs"] / max(1, bat["innings"] - bat["not_outs"]), 2) if bat["innings"] > 0 and (bat["innings"] - bat["not_outs"]) > 0 else bat["runs"]
+    bat_sr = round((bat["runs"] / bat["balls"]) * 100, 2) if bat["balls"] > 0 else 0
+    bowl_econ = round(bowl["runs"] / (bowl["balls"] / 6), 2) if bowl["balls"] > 0 else 0
+    bowl_avg = round(bowl["runs"] / bowl["wickets"], 2) if bowl["wickets"] > 0 else 0
+    bowl_sr = round(bowl["balls"] / bowl["wickets"], 2) if bowl["wickets"] > 0 else 0
+
+    return {"user": user, "stats": {
+        "matches": match_count,
+        "batting": {**bat, "average": bat_avg, "strike_rate": bat_sr},
+        "bowling": {**bowl, "economy": bowl_econ, "average": bowl_avg, "strike_rate": bowl_sr},
+        "fielding": field,
+        "mom_awards": mom_awards,
+    }}
+
+
+@api_router.get("/public/players/{user_id}/stats")
+async def public_player_stats(user_id: str):
+    """No-auth player profile — safe subset for share links."""
+    data = await _player_stats_data(user_id)
+    u = data.get("user") or {}
+    # Strip PII (email/phone) from public payload — keep display fields only
+    data["user"] = {
+        "user_id": u.get("user_id"),
+        "name": u.get("name"),
+        "picture": u.get("picture"),
+        "profile_picture_path": u.get("profile_picture_path"),
+        "batting_style": u.get("batting_style"),
+        "bowling_style": u.get("bowling_style"),
+        "role": u.get("role"),
+    }
+    return data
+
+
+# ============ TOURNAMENT MVP ============
+@api_router.get("/tournaments/{t_id}/mvp")
+async def tournament_mvp(t_id: str, authorization: Optional[str] = Header(None)):
+    await get_user_from_token(authorization)
+    trn = await db.tournaments.find_one({"tournament_id": t_id}, {"_id": 0})
+    if not trn:
+        raise HTTPException(status_code=404, detail="Not found")
+    teams = await db.teams.find({"team_id": {"$in": trn.get("team_ids", [])}}, {"_id": 0}).to_list(500)
+    matches = await db.matches.find({"tournament_id": t_id, "status": "completed"}, {"_id": 0}).to_list(500)
+    # Build player_id -> player info + team
+    players: Dict[str, Dict[str, Any]] = {}
+    for t in teams:
+        for p in t.get("players", []):
+            pid = p["player_id"]
+            players[pid] = {
+                "player_id": pid,
+                "name": p.get("name"),
+                "user_id": p.get("user_id"),
+                "picture": p.get("picture"),
+                "profile_picture_path": p.get("profile_picture_path"),
+                "team_id": t["team_id"],
+                "team_short": t["short_name"],
+                "team_name": t["name"],
+                "matches": 0, "runs": 0, "balls_faced": 0, "wickets": 0, "balls_bowled": 0, "runs_conceded": 0,
+                "maidens": 0, "catches": 0, "run_outs": 0, "stumpings": 0, "fours": 0, "sixes": 0,
+                "mvp_points": 0,
+            }
+
+    seen_match_players: Dict[str, set] = {}
+    for m in matches:
+        for side in ("innings_a", "innings_b"):
+            inn = m.get(side) or {}
+            for pid, st in (inn.get("batters") or {}).items():
+                if pid not in players: continue
+                seen_match_players.setdefault(m["match_id"], set()).add(pid)
+                runs = int(st.get("runs") or 0)
+                balls = int(st.get("balls") or 0)
+                fours = int(st.get("fours") or 0)
+                sixes = int(st.get("sixes") or 0)
+                players[pid]["runs"] += runs
+                players[pid]["balls_faced"] += balls
+                players[pid]["fours"] += fours
+                players[pid]["sixes"] += sixes
+                # Bat points
+                sr_bonus = 0
+                if balls >= 5:
+                    sr_bonus = int(max(0, (runs / balls * 100 - 100)) / 2)
+                players[pid]["mvp_points"] += runs + fours * 2 + sixes * 4 + sr_bonus
+            for pid, st in (inn.get("bowlers") or {}).items():
+                if pid not in players: continue
+                seen_match_players.setdefault(m["match_id"], set()).add(pid)
+                wkts = int(st.get("wickets") or 0)
+                balls = int(st.get("balls") or 0)
+                runs = int(st.get("runs") or 0)
+                mds = int(st.get("maidens") or 0)
+                players[pid]["wickets"] += wkts
+                players[pid]["balls_bowled"] += balls
+                players[pid]["runs_conceded"] += runs
+                players[pid]["maidens"] += mds
+                econ_bonus = 0
+                if balls >= 6:
+                    econ = runs / (balls / 6)
+                    econ_bonus = int(max(0, (7 - econ) * 3))
+                players[pid]["mvp_points"] += wkts * 25 + mds * 8 + econ_bonus
+            for st in (inn.get("batters") or {}).values():
+                fid = st.get("fielder_id")
+                if fid and fid in players:
+                    ot = st.get("out_type")
+                    if ot == "catch_out":
+                        players[fid]["catches"] += 1; players[fid]["mvp_points"] += 10
+                    elif ot == "run_out":
+                        players[fid]["run_outs"] += 1; players[fid]["mvp_points"] += 15
+                    elif ot == "stumped":
+                        players[fid]["stumpings"] += 1; players[fid]["mvp_points"] += 20
+                    seen_match_players.setdefault(m["match_id"], set()).add(fid)
+    # matches played
+    for mid, pids in seen_match_players.items():
+        for pid in pids:
+            if pid in players:
+                players[pid]["matches"] += 1
+    board = sorted(players.values(), key=lambda x: -x["mvp_points"])
+    board = [p for p in board if p["matches"] > 0 or p["mvp_points"] > 0]
+    return {"leaderboard": board}
+
+
+# ============ SEARCH ============
+@api_router.get("/search")
+async def global_search(q: str = "", authorization: Optional[str] = Header(None)):
+    user = await get_user_from_token(authorization)
+    q = (q or "").strip()
+    if len(q) < 2:
+        return {"users": [], "matches": [], "tournaments": []}
+    regex = {"$regex": q, "$options": "i"}
+    users = await db.users.find(
+        {"$or": [{"name": regex}, {"phone": regex}, {"email": regex}]},
+        {"_id": 0, "user_id": 1, "name": 1, "phone": 1, "email": 1, "picture": 1, "profile_picture_path": 1},
+    ).limit(10).to_list(10)
+    matches = await db.matches.find(
+        {"owner_id": user["user_id"], "$or": [{"team_a_name": regex}, {"team_b_name": regex}, {"venue": regex}, {"match_id": regex}]},
+        {"_id": 0, "match_id": 1, "team_a_name": 1, "team_b_name": 1, "team_a_short": 1, "team_b_short": 1, "status": 1, "overs": 1, "share_token": 1, "result_text": 1},
+    ).limit(10).to_list(10)
+    tournaments = await db.tournaments.find(
+        {"owner_id": user["user_id"], "$or": [{"name": regex}, {"location": regex}]},
+        {"_id": 0, "tournament_id": 1, "name": 1, "location": 1, "overs": 1},
+    ).limit(10).to_list(10)
+    return {"users": users, "matches": matches, "tournaments": tournaments}
+
+
 # ============ PUBLIC / SHARE ============
 @api_router.get("/public/matches/{share_token}")
 async def public_match(share_token: str):
@@ -982,7 +1375,32 @@ async def public_match(share_token: str):
         raise HTTPException(status_code=404, detail="Match not found")
     team_a = await db.teams.find_one({"team_id": m["team_a_id"]}, {"_id": 0, "owner_id": 0})
     team_b = await db.teams.find_one({"team_id": m["team_b_id"]}, {"_id": 0, "owner_id": 0})
+    team_a = await _enrich_team_players(team_a)
+    team_b = await _enrich_team_players(team_b)
     return {"match": m, "team_a": team_a, "team_b": team_b}
+
+
+@api_router.get("/public/matches/{share_token}/events")
+async def public_match_events(share_token: str, side: Optional[str] = None, limit: int = 50):
+    """Ball-by-ball event feed for public share (newest first)."""
+    m = await db.matches.find_one({"share_token": share_token}, {"_id": 0})
+    if not m:
+        raise HTTPException(status_code=404, detail="Match not found")
+    if side and side in ("a", "b"):
+        events = (m.get("innings_a") if side == "a" else m.get("innings_b") or {}).get("events") or []
+    else:
+        # combine, mark innings side on each
+        events = []
+        for s in ("a", "b"):
+            inn = m.get("innings_a" if s == "a" else "innings_b") or {}
+            for i, ev in enumerate(inn.get("events") or []):
+                # strip pre_state from public feed (heavy + internal)
+                clean = {k: v for k, v in ev.items() if k != "pre"}
+                clean["side"] = s
+                clean["ball_index"] = i
+                events.append(clean)
+    events = events[-limit:][::-1]
+    return {"events": events, "current_innings": m.get("current_innings"), "status": m.get("status")}
 
 
 @api_router.get("/public/files/{path:path}")

@@ -41,6 +41,7 @@ const useStyles = makeStyles((c) => ({
   emptyText: { color: c.muted, marginTop: 8 },
   extraLine: { paddingHorizontal: 16, paddingVertical: 12, backgroundColor: c.surface },
   extraText: { color: c.muted, fontSize: 13 },
+  sectionHead: { fontSize: 12, fontWeight: "700", color: c.muted, letterSpacing: 1, marginHorizontal: 16, marginTop: 20, marginBottom: 8, textTransform: "uppercase" },
 }));
 
 export default function Scorecard() {
@@ -126,6 +127,10 @@ export default function Scorecard() {
           <Text style={styles.scoreTeam}>{batTeam.name} batting</Text>
           <Text style={styles.scoreValue} testID="innings-total">{inn.runs}/{inn.wickets}</Text>
           <Text style={styles.scoreOvers}>{overs} / {match.overs} overs</Text>
+          {(() => {
+            const extras = Object.values(inn.bowlers || {}).reduce((a: number, b: any) => a + (b.extras || 0), 0);
+            return <Text style={styles.tossLine}>Extras: {extras}</Text>;
+          })()}
           {!!tossLine && <Text style={styles.tossLine} testID="toss-line">{tossLine}</Text>}
         </View>
 
@@ -173,13 +178,14 @@ export default function Scorecard() {
         <View style={[styles.tableHead, { marginTop: 20 }]}>
           <Text style={[styles.headText, styles.colBat]}>Bowler</Text>
           <Text style={[styles.headText, styles.col]}>O</Text>
+          <Text style={[styles.headText, styles.col]}>M</Text>
           <Text style={[styles.headText, styles.col]}>R</Text>
           <Text style={[styles.headText, styles.col]}>W</Text>
           <Text style={[styles.headText, styles.colWide]}>Econ</Text>
         </View>
         {bowlersList.length === 0 ? <View style={styles.empty}><Text style={styles.emptyText}>No bowling stats yet</Text></View> :
           bowlersList.map((p: any) => {
-            const st = inn.bowlers?.[p.player_id] || { balls: 0, runs: 0, wickets: 0 };
+            const st = inn.bowlers?.[p.player_id] || { balls: 0, runs: 0, wickets: 0, maidens: 0 };
             const oversStr = `${Math.floor((st.balls || 0) / 6)}.${(st.balls || 0) % 6}`;
             const econ = st.balls > 0 ? ((st.runs / (st.balls / 6)) || 0).toFixed(2) : "0.00";
             const pic = p.profile_picture_path ? fileUrl(p.profile_picture_path, token) : p.picture;
@@ -193,6 +199,7 @@ export default function Scorecard() {
                   <Text style={styles.batName}>{p.name}</Text>
                 </View>
                 <Text style={[styles.rowText, styles.col]}>{oversStr}</Text>
+                <Text style={[styles.rowText, styles.col]}>{st.maidens || 0}</Text>
                 <Text style={[styles.rowText, styles.col]}>{st.runs}</Text>
                 <Text style={[styles.rowText, styles.col, styles.rowTextBold]}>{st.wickets}</Text>
                 <Text style={[styles.rowText, styles.colWide]}>{econ}</Text>
@@ -200,6 +207,35 @@ export default function Scorecard() {
             );
           })
         }
+        {(() => {
+          // Fall of wickets — derive from events
+          const fow: Array<{ runs: number; wkt: number; balls: number; who: string }> = [];
+          let runs = 0, wkt = 0, balls = 0;
+          for (const ev of inn.events || []) {
+            if (ev.extra_type === "wide" || ev.extra_type === "no_ball") {
+              runs += (ev.runs || 0) + 1;
+            } else {
+              balls += 1;
+              runs += (ev.runs || 0);
+            }
+            if (ev.wicket) {
+              wkt += 1;
+              fow.push({ runs, wkt, balls, who: playerName(ev.out_batsman_id) });
+            }
+          }
+          if (fow.length === 0) return null;
+          return (
+            <View>
+              <Text style={styles.sectionHead}>Fall of Wickets</Text>
+              {fow.map((f, i) => (
+                <View key={i} style={styles.row}>
+                  <Text style={[styles.rowText, { flex: 3, fontWeight: "700" }]}>{f.runs}-{f.wkt} ({f.who})</Text>
+                  <Text style={[styles.rowText, styles.col]}>{Math.floor(f.balls / 6)}.{f.balls % 6}</Text>
+                </View>
+              ))}
+            </View>
+          );
+        })()}
         <View style={{ height: 32 + insets.bottom }} />
       </ScrollView>
     </View>

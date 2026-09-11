@@ -1,4 +1,4 @@
-import { View, Text, Pressable, ScrollView, ActivityIndicator, Modal, Image, Platform } from "react-native";
+import { View, Text, Pressable, ScrollView, ActivityIndicator, Modal, Image, Platform, Alert } from "react-native";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -99,6 +99,9 @@ const useStyles = makeStyles((c) => ({
   shareText: { color: c.onSurface, fontSize: 14, marginBottom: 12 },
   shareLink: { padding: 12, backgroundColor: c.surfaceTertiary, borderRadius: 10, marginBottom: 12 },
   shareLinkText: { color: c.brandPrimary, fontWeight: "700" },
+
+  scorecardCta: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: c.brandTertiary, borderTopWidth: 1, borderBottomWidth: 1, borderColor: c.border, paddingVertical: 12, paddingHorizontal: 16 },
+  scorecardCtaText: { color: c.onBrandTertiary, fontWeight: "800", fontSize: 13, letterSpacing: 0.5 },
 }));
 
 const OUT_TYPES = [
@@ -112,6 +115,29 @@ const OUT_TYPES = [
 ];
 
 const OUT_NEEDS_FIELDER: Record<string, boolean> = { catch_out: true, run_out: true, stumped: true };
+
+function crossAlert(msg: string) {
+  if (Platform.OS === "web") {
+    // eslint-disable-next-line no-alert
+    if (typeof window !== "undefined") window.alert(msg);
+    return;
+  }
+  Alert.alert("", msg);
+}
+
+function crossConfirm(title: string, message: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (Platform.OS === "web") {
+      // eslint-disable-next-line no-alert
+      resolve(typeof window !== "undefined" && window.confirm(`${title}\n\n${message}`));
+      return;
+    }
+    Alert.alert(title, message, [
+      { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+      { text: "Delete", style: "destructive", onPress: () => resolve(true) },
+    ]);
+  });
+}
 
 export default function LiveMatch() {
   const styles = useStyles();
@@ -159,19 +185,47 @@ export default function LiveMatch() {
       setTeamA(tA); setTeamB(tB);
       if (m.current_innings === "a") { setBatTeam(tA); setBowlTeam(tB); }
       else { setBatTeam(tB); setBowlTeam(tA); }
-      // Auto-open pickers when required
-      if (cur.needs_new_batsman && !batsmanForNextBall) setShowNewBatsman(true);
-      if (cur.needs_new_bowler && !bowlerForNextBall) setShowNewBowler(true);
-      // If a new innings needs to start, route to setup
-      if (m.status !== "completed") {
-        const nextInn = m.current_innings === "a" ? m.innings_a : m.innings_b;
-        if (!nextInn.started) router.replace(`/matches/${id}/setup?side=${m.current_innings}`);
+      // Auto-open pickers when required (only when innings is live & not completed)
+      if (!cur.completed) {
+        if (cur.needs_new_batsman && !batsmanForNextBall) setShowNewBatsman(true);
+        if (cur.needs_new_bowler && !bowlerForNextBall) setShowNewBowler(true);
       }
     } catch {}
   }, [apiFetch, id, batsmanForNextBall, bowlerForNextBall, router]);
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   const curInn = useMemo(() => (match ? (match.current_innings === "a" ? match.innings_a : match.innings_b) : null), [match]);
+
+  // SAFETY: whenever the innings completes or the match completes, force-close every scoring modal
+  // and reset transient pickers so the user is never stuck behind a phantom picker sheet.
+  useEffect(() => {
+    if (!match || !curInn) return;
+    const done = match.status === "completed" || !!curInn.completed;
+    if (done) {
+      setShowNewBatsman(false);
+      setShowNewBowler(false);
+      setShowWicketType(false);
+      setShowFielder(false);
+      setPendingWicket(null);
+      setPickedBatsman("");
+      setPickedBowler("");
+      setPickedFielder("");
+      setBatsmanForNextBall("");
+      setBowlerForNextBall("");
+    }
+  }, [match?.status, curInn?.completed]);
+
+  const openPlayerProfile = useCallback((pid: string | null) => {
+    if (!pid) return;
+    const all = [...(batTeam?.players || []), ...(bowlTeam?.players || [])];
+    const p = all.find((x) => x.player_id === pid);
+    if (!p) return;
+    if (!p.user_id) {
+      Alert.alert("Guest Player", `${p.name} is a guest — no player profile yet.`);
+      return;
+    }
+    router.push(`/player/${p.user_id}`);
+  }, [batTeam, bowlTeam, router]);
 
   const playerName = useCallback((pid: string | null) => {
     if (!pid) return "-";
@@ -200,7 +254,7 @@ export default function LiveMatch() {
         await load();
       } else {
         const j = await r.json().catch(() => ({}));
-        alert(j.detail || "Failed to record ball");
+        crossAlert(j.detail || "Failed to record ball");
       }
     } catch {}
     setSaving(false);
@@ -216,7 +270,7 @@ export default function LiveMatch() {
         await load();
       } else {
         const j = await r.json().catch(() => ({}));
-        alert(j.detail || "Nothing to undo");
+        crossAlert(j.detail || "Nothing to undo");
       }
     } catch {}
     setSaving(false);
@@ -224,15 +278,15 @@ export default function LiveMatch() {
 
   const runsButton = (n: number) => {
     if (!curInn) return;
-    if (curInn.needs_new_batsman && !batsmanForNextBall) { alert("Select the new batsman first."); return; }
-    if (curInn.needs_new_bowler && !bowlerForNextBall) { alert("Select the next bowler first."); return; }
+    if (curInn.needs_new_batsman && !batsmanForNextBall) { crossAlert("Select the new batsman first."); return; }
+    if (curInn.needs_new_bowler && !bowlerForNextBall) { crossAlert("Select the next bowler first."); return; }
     sendBall({ runs: n, extra_type: extra, wicket: false });
   };
 
   const wicketButton = () => {
     if (!curInn) return;
-    if (extra === "no_ball") { alert("Wicket can't be recorded on a no-ball"); return; }
-    if (curInn.needs_new_bowler && !bowlerForNextBall) { alert("Select the next bowler first."); return; }
+    if (extra === "no_ball") { crossAlert("Wicket cannot be recorded on a no-ball"); return; }
+    if (curInn.needs_new_bowler && !bowlerForNextBall) { crossAlert("Select the next bowler first."); return; }
     setPendingWicket({ out_type: "", runs: 0 });
     setShowWicketType(true);
   };
@@ -254,7 +308,7 @@ export default function LiveMatch() {
 
   const copyShare = async () => {
     if (!shareUrl) return;
-    try { await Clipboard.setStringAsync(shareUrl); alert("Link copied!"); } catch {}
+    try { await Clipboard.setStringAsync(shareUrl); crossAlert("Link copied!"); } catch {}
   };
 
   const submitMoM = async () => {
@@ -279,12 +333,20 @@ export default function LiveMatch() {
   const oversStr = `${Math.floor(curInn.balls / 6)}.${curInn.balls % 6}`;
   const runRate = curInn.balls > 0 ? ((curInn.runs / (curInn.balls / 6)) || 0).toFixed(2) : "0.00";
   const otherInn = match.current_innings === "a" ? match.innings_b : match.innings_a;
+  const isInningsEnded = !isCompleted && curInn.completed;
+  const needsNextInningsSetup = !isCompleted && !curInn.started && otherInn?.completed;
+
   let chaseInfo = "";
+  let rrrLine = "";
   if (otherInn?.started && otherInn?.completed) {
     const target = otherInn.runs + 1;
     const need = target - curInn.runs;
     const ballsLeft = maxBalls - curInn.balls;
-    if (need > 0) chaseInfo = `Need ${need} in ${ballsLeft} balls (target ${target})`;
+    if (need > 0 && ballsLeft > 0) {
+      chaseInfo = `Need ${need} in ${ballsLeft} balls (target ${target})`;
+      const rrr = ((need * 6) / ballsLeft).toFixed(2);
+      rrrLine = `RRR: ${rrr}`;
+    }
   }
 
   const bat = batTeam?.players || [];
@@ -313,6 +375,17 @@ export default function LiveMatch() {
         <Text style={styles.htitle}>{match.team_a_short} vs {match.team_b_short}</Text>
         <Pressable testID="scorecard-btn" style={styles.hbtnIcon} onPress={() => router.push(`/matches/${id}/scorecard`)}><Ionicons name="list-outline" size={22} color={colors.onSurface} /></Pressable>
         <Pressable testID="share-btn" style={styles.hbtnIcon} onPress={() => setShowShare(true)}><Ionicons name="share-social-outline" size={22} color={colors.onSurface} /></Pressable>
+        <Pressable testID="delete-match-btn" style={styles.hbtnIcon} onPress={async () => {
+          const ok = await crossConfirm("Delete Match?", "This match will be permanently removed for everyone. This cannot be undone.");
+          if (!ok) return;
+          const r = await apiFetch(`/api/matches/${id}`, { method: "DELETE" });
+          if (r.ok) {
+            router.replace("/(tabs)");
+          } else {
+            const j = await r.json().catch(() => ({}));
+            Alert.alert("Delete failed", j.detail || "Could not delete this match. Only the match creator can delete it.");
+          }
+        }}><Ionicons name="trash-outline" size={20} color={colors.error} /></Pressable>
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false}>
@@ -334,14 +407,49 @@ export default function LiveMatch() {
               <Text style={styles.metaVal}>{runRate}</Text>
             </View>
           </View>
-          {chaseInfo ? <Text style={styles.chase}>{chaseInfo}</Text> : null}
+          {chaseInfo ? <Text style={styles.chase}>{chaseInfo}{rrrLine ? ` • ${rrrLine}` : ""}</Text> : null}
           {tossLine ? <Text style={styles.toss}>{tossLine}</Text> : null}
           {isCompleted && match.result_text ? <Text style={styles.result} testID="result-text">🏆 {match.result_text}</Text> : null}
         </View>
 
-        {!isCompleted && strikerObj && (
+        <Pressable testID="view-scorecard-cta" style={styles.scorecardCta} onPress={() => router.push(`/matches/${id}/scorecard`)}>
+          <Ionicons name="reader-outline" size={18} color={colors.onBrandTertiary} />
+          <Text style={styles.scorecardCtaText}>VIEW FULL SCORECARD</Text>
+          <Ionicons name="chevron-forward" size={16} color={colors.onBrandTertiary} />
+        </Pressable>
+
+        {isInningsEnded && (
+          <View style={[styles.completedCard, { backgroundColor: colors.warning }]} testID="innings-end-card">
+            <Ionicons name="flag" size={36} color={colors.onWarning} />
+            <Text style={[styles.completedTitle, { color: colors.onWarning }]}>Innings End</Text>
+            <Text style={[styles.completedSub, { color: colors.onWarning }]}>
+              {batTeam?.name} finished at {curInn.runs}/{curInn.wickets} ({oversStr} overs)
+            </Text>
+            <Pressable testID="start-next-innings-btn" style={[styles.primaryBtn, { marginTop: 12, backgroundColor: colors.brandPrimary }]} onPress={() => {
+              // Flip current innings on server side already happened; just route to setup for the current innings that hasn't started
+              router.replace(`/matches/${id}/setup?side=${match.current_innings === "a" ? "b" : "a"}`);
+            }}>
+              <Text style={styles.primaryBtnText}>Start Next Innings</Text>
+            </Pressable>
+          </View>
+        )}
+
+        {needsNextInningsSetup && !isInningsEnded && (
+          <View style={[styles.completedCard, { backgroundColor: colors.warning }]} testID="innings-end-card">
+            <Ionicons name="flag" size={36} color={colors.onWarning} />
+            <Text style={[styles.completedTitle, { color: colors.onWarning }]}>INNINGS END</Text>
+            <Text style={[styles.completedSub, { color: colors.onWarning }]}>
+              {(match.current_innings === "a" ? match.team_b_name : match.team_a_name)} finished at {otherInn?.runs}/{otherInn?.wickets} ({Math.floor((otherInn?.balls || 0) / 6)}.{(otherInn?.balls || 0) % 6} ov)
+            </Text>
+            <Pressable testID="goto-setup-btn" style={[styles.primaryBtn, { marginTop: 12, backgroundColor: colors.brandPrimary }]} onPress={() => router.replace(`/matches/${id}/setup?side=${match.current_innings}`)}>
+              <Text style={styles.primaryBtnText}>Start Next Innings</Text>
+            </Pressable>
+          </View>
+        )}
+
+        {!isCompleted && !isInningsEnded && strikerObj && (
           <View style={styles.playersRow}>
-            <View style={[styles.playerBox, styles.playerBoxActive]}>
+            <Pressable style={[styles.playerBox, styles.playerBoxActive]} onPress={() => openPlayerProfile(strikerObj.player_id)} testID="striker-tap">
               <View style={styles.playerAvatar}>
                 {strikerObj.profile_picture_path || strikerObj.picture ? <Image source={{ uri: fileUrl(strikerObj.profile_picture_path, token) || strikerObj.picture, headers: token ? { Authorization: `Bearer ${token}` } : undefined }} style={styles.playerAvatarImg} /> : <Text style={styles.playerAvatarText}>{strikerObj.name?.[0]}</Text>}
               </View>
@@ -350,8 +458,8 @@ export default function LiveMatch() {
                 <Text style={styles.playerName} testID="striker-name" numberOfLines={1}>{strikerObj.name}</Text>
                 {strikerStat && <Text style={styles.playerStat}>{strikerStat.runs}({strikerStat.balls})</Text>}
               </View>
-            </View>
-            <View style={styles.playerBox}>
+            </Pressable>
+            <Pressable style={styles.playerBox} onPress={() => openPlayerProfile(nonStrikerObj?.player_id)} testID="nonstriker-tap">
               <View style={styles.playerAvatar}>
                 {nonStrikerObj?.profile_picture_path || nonStrikerObj?.picture ? <Image source={{ uri: fileUrl(nonStrikerObj.profile_picture_path, token) || nonStrikerObj.picture, headers: token ? { Authorization: `Bearer ${token}` } : undefined }} style={styles.playerAvatarImg} /> : <Text style={styles.playerAvatarText}>{nonStrikerObj?.name?.[0] || "?"}</Text>}
               </View>
@@ -360,8 +468,8 @@ export default function LiveMatch() {
                 <Text style={styles.playerName} testID="nonstriker-name" numberOfLines={1}>{nonStrikerObj?.name || "-"}</Text>
                 {nonStrikerStat && <Text style={styles.playerStat}>{nonStrikerStat.runs}({nonStrikerStat.balls})</Text>}
               </View>
-            </View>
-            <View style={styles.playerBox}>
+            </Pressable>
+            <Pressable style={styles.playerBox} onPress={() => openPlayerProfile(bowlerObj?.player_id)} testID="bowler-tap">
               <View style={styles.playerAvatar}>
                 {bowlerObj?.profile_picture_path || bowlerObj?.picture ? <Image source={{ uri: fileUrl(bowlerObj.profile_picture_path, token) || bowlerObj.picture, headers: token ? { Authorization: `Bearer ${token}` } : undefined }} style={styles.playerAvatarImg} /> : <Text style={styles.playerAvatarText}>{bowlerObj?.name?.[0] || "?"}</Text>}
               </View>
@@ -370,7 +478,7 @@ export default function LiveMatch() {
                 <Text style={styles.playerName} testID="bowler-name" numberOfLines={1}>{bowlerObj?.name || "-"}</Text>
                 {bowlerStat && <Text style={styles.playerStat}>{Math.floor(bowlerStat.balls / 6)}.{bowlerStat.balls % 6} - {bowlerStat.runs} - {bowlerStat.wickets}</Text>}
               </View>
-            </View>
+            </Pressable>
           </View>
         )}
 
@@ -389,7 +497,7 @@ export default function LiveMatch() {
           </View>
         )}
 
-        {!isCompleted && (
+        {!isCompleted && !isInningsEnded && !needsNextInningsSetup && curInn.started && (
           <>
             <View style={styles.extrasRow}>
               {(["none","wide","no_ball","bye","leg_bye"] as const).map((e) => (
@@ -440,8 +548,9 @@ export default function LiveMatch() {
                 <View style={{ flex: 1 }}>
                   <Text style={styles.momLbl}>🏅 MAN OF THE MATCH</Text>
                   <Text style={styles.momName}>{momPlayer.name}</Text>
-                  <Text style={styles.momMeta}>{match.man_of_the_match_team_id === match.team_a_id ? match.team_a_name : match.team_b_name}</Text>
+                  <Text style={styles.momMeta}>{match.man_of_the_match_team_id === match.team_a_id ? match.team_a_name : match.team_b_name}{match.man_of_the_match_summary ? ` • ${match.man_of_the_match_summary}` : ""}</Text>
                 </View>
+                <Pressable testID="change-mom-btn" onPress={() => setShowMoM(true)}><Ionicons name="pencil" size={18} color={colors.muted} /></Pressable>
               </View>
             ) : (
               <Pressable testID="pick-mom-btn" style={styles.primaryBtn} onPress={() => setShowMoM(true)}>

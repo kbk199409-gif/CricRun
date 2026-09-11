@@ -1,0 +1,34 @@
+{
+  "summary": "Backend regression + v5 fixes fully verified. 19/20 tests pass, 1 intentional skip (documented dead-end scenario in test_v4 that has been superseded by test_full_match_chase_wins_and_sets_mom). Exit code 0. All 4 last-ball-wicket cases (A/B/C/D) pass; profile-picture enrichment propagates via /teams/{id} and /public/matches/{token}; public player stats endpoint returns 200 without auth and strips email/phone; DELETE match works for owner (200), non-owner gets 403, deleted match removed from GET/list/search; chase-completion works symmetrically when team_b bats first and team_a chases; all v4 sanity flows (auto MoM, tournament MVP, public events, maidens, global search scoping) still green.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_v4_features.py",
+    "/app/backend/tests/test_v5_fixes.py",
+    "/app/backend/tests/test_v5_additional.py",
+    "/app/test_reports/pytest/pytest_v5_iter5.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now ~1430 lines and starting to exceed the 700-line guideline. Consider splitting into routers (auth, teams, tournaments, matches, public) in a future refactor.",
+    "The pre_state snapshot is persisted inside innings.events which balloons match documents — fine for a few overs, but for long matches consider dropping pre before store and rebuilding for undo on demand.",
+    "OTP_DEV_MODE returning dev_code in the response is correct for dev/preview; ensure OTP_DEV_MODE=false is set in prod so `dev_code` is never leaked."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_v5_additional.py (new — 5 cases: CASE B all-out, CASE C wicket-on-final-ball-and-overs-done, delete-match search regression, non-owner 403 flow, chase symmetry when team_b bats first)"
+  ],
+  "success_rate": {"backend": "100% (19/19 executed, 1 skipped intentionally)", "frontend": "not tested (backend-only scope)"},
+  "seed_data_creation": "Each test signs up a fresh phone number (dev OTP) and creates fresh teams/matches — no shared state. Prefixes: CAX_/CBX_/SR_A_/SR_B_/TEST_A_/TEST_B_ for cleanup identification.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "pytest.ini pins -n 2 --dist loadscope; to run serial use `-n 0` (NOT -p no:xdist). BASE_URL comes from EXPO_PUBLIC_BACKEND_URL. OTP_DEV_MODE returns dev_code in send response; use fresh phone per test to avoid 30-second resend cooldown. New CASE B test uses 11 batters + 20 overs and alternates bowlers every over (needs_new_bowler required at over ends even while taking wickets).",
+  "rca_of_issue": "N/A — no regressions. Fixes verified: (1) after a last-ball wicket the `_apply_ball_effects` sets needs_new_batsman=True but the subsequent completed-branch in record_ball clears both pending flags (needs_new_batsman/needs_new_bowler) → frontend won't hang on a picker; (2) _enrich_team_players hydrates fresh profile_picture_path from users collection on every /teams/{id} and /public/matches/{token} fetch → uploads propagate immediately; (3) /public/players/{user_id}/stats explicitly strips email/phone; (4) DELETE /matches/{id} does a hard delete → search/list/get all consistent; (5) chase-completion logic references the OTHER innings' completion regardless of which side (a or b) is chasing → symmetry holds."
+}

@@ -70,7 +70,8 @@ export default function TournamentDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { apiFetch } = useAuth();
   const [data, setData] = useState<any>(null);
-  const [tab, setTab] = useState<"matches" | "teams" | "points">("points");
+  const [mvp, setMvp] = useState<any[]>([]);
+  const [tab, setTab] = useState<"matches" | "teams" | "points" | "mvp">("points");
   const [addingTeam, setAddingTeam] = useState(false);
   const [myTeams, setMyTeams] = useState<any[]>([]);
 
@@ -80,6 +81,8 @@ export default function TournamentDetail() {
       if (r.ok) setData(await r.json());
       const t = await apiFetch("/api/teams");
       if (t.ok) { const d = await t.json(); setMyTeams(d.teams || []); }
+      const mv = await apiFetch(`/api/tournaments/${id}/mvp`);
+      if (mv.ok) setMvp(((await mv.json()).leaderboard) || []);
     } catch {}
   }, [apiFetch, id]);
   useFocusEffect(useCallback(() => { load(); }, [load]));
@@ -120,9 +123,9 @@ export default function TournamentDetail() {
       </View>
 
       <View style={styles.tabs}>
-        {(["points", "matches", "teams"] as const).map((t) => (
+        {(["points", "matches", "teams", "mvp"] as const).map((t) => (
           <Pressable key={t} testID={`tab-${t}`} style={[styles.tab, tab === t && styles.tabActive]} onPress={() => setTab(t)}>
-            <Text style={[styles.tabText, tab === t && styles.tabTextActive]}>{t === "points" ? "Points Table" : t === "matches" ? "Matches" : "Teams"}</Text>
+            <Text style={[styles.tabText, tab === t && styles.tabTextActive]}>{t === "points" ? "Points" : t === "matches" ? "Matches" : t === "teams" ? "Teams" : "MVP"}</Text>
           </Pressable>
         ))}
       </View>
@@ -187,6 +190,24 @@ export default function TournamentDetail() {
                 <Text style={styles.smallScore}>{m.innings_b.runs}/{m.innings_b.wickets} ({Math.floor((m.innings_b.balls || 0) / 6)}.{(m.innings_b.balls || 0) % 6})</Text>
               </View>
             </Pressable>
+          ))
+        )}
+        {tab === "mvp" && (
+          mvp.length === 0 ? (
+            <View style={styles.empty}><Ionicons name="star-outline" size={40} color={colors.muted} /><Text style={styles.emptyText}>No MVP data yet. Complete matches to update.</Text></View>
+          ) : mvp.map((p, i) => (
+            <View key={p.player_id} style={styles.card} testID={`mvp-${p.player_id}`}>
+              <View style={styles.teamRow}>
+                <View style={[styles.teamLogo, { backgroundColor: i === 0 ? colors.warning : colors.surfaceTertiary }]}>
+                  <Text style={[styles.teamLogoText, { color: i === 0 ? colors.onWarning : colors.onSurface }]}>{i + 1}</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.teamName}>{p.name}</Text>
+                  <Text style={{ color: colors.muted, fontSize: 11, marginTop: 2 }}>{p.team_short} • {p.matches} M • {p.runs} R • {p.wickets} W • {p.catches + p.run_outs + p.stumpings} F</Text>
+                </View>
+                <Text style={{ color: colors.onBrandTertiary, fontWeight: "800", fontSize: 16, backgroundColor: colors.brandTertiary, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 }}>{p.mvp_points}</Text>
+              </View>
+            </View>
           ))
         )}
         {tab === "teams" && (

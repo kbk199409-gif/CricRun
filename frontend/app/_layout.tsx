@@ -28,8 +28,10 @@ function AuthGate() {
     const inAuth = segments[0] === undefined || segments[0] === "index" || segments[0] === "otp";
     const inProfileSetup = segments[0] === "profile-setup";
     const inPublic = segments[0] === "share";
+    // Allow /player/[id] with ?public=1 to be viewed without auth (used from public share)
+    const inPlayerPublic = segments[0] === "player" && (typeof window !== "undefined" && window.location?.search?.includes("public=1"));
 
-    if (inPublic) return; // public shareable routes bypass auth
+    if (inPublic || inPlayerPublic) return; // public routes bypass auth
 
     if (!user) {
       if (!inAuth) router.replace("/");

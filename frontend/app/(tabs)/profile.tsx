@@ -1,4 +1,6 @@
-import { View, Text, Pressable, ScrollView, Image } from "react-native";
+import { View, Text, Pressable, ScrollView, Image, ActivityIndicator } from "react-native";
+import { useCallback, useEffect, useState } from "react";
+import { useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Ionicons from "@react-native-vector-icons/ionicons";
 import { makeStyles, useTheme } from "@/src/theme";
@@ -37,8 +39,20 @@ export default function ProfileTab() {
   const styles = useStyles();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
-  const { user, signOut, token } = useAuth();
+  const router = useRouter();
+  const { user, signOut, token, apiFetch } = useAuth();
+  const [stats, setStats] = useState<any>(null);
   const picUrl = fileUrl(user?.profile_picture_path, token);
+
+  const loadStats = useCallback(async () => {
+    if (!user) return;
+    try {
+      const r = await apiFetch(`/api/players/${user.user_id}/stats`);
+      if (r.ok) setStats((await r.json()).stats);
+    } catch {}
+  }, [apiFetch, user]);
+
+  useFocusEffect(useCallback(() => { loadStats(); }, [loadStats]));
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]} testID="profile-tab">
@@ -63,12 +77,17 @@ export default function ProfileTab() {
         </View>
 
         <View style={styles.statsRow}>
-          <View style={styles.statCard}><Text style={styles.statVal}>0</Text><Text style={styles.statLabel}>Matches</Text></View>
-          <View style={styles.statCard}><Text style={styles.statVal}>0</Text><Text style={styles.statLabel}>Runs</Text></View>
-          <View style={styles.statCard}><Text style={styles.statVal}>0</Text><Text style={styles.statLabel}>Wickets</Text></View>
+          <View style={styles.statCard}><Text style={styles.statVal}>{stats?.matches ?? 0}</Text><Text style={styles.statLabel}>Matches</Text></View>
+          <View style={styles.statCard}><Text style={styles.statVal}>{stats?.batting?.runs ?? 0}</Text><Text style={styles.statLabel}>Runs</Text></View>
+          <View style={styles.statCard}><Text style={styles.statVal}>{stats?.bowling?.wickets ?? 0}</Text><Text style={styles.statLabel}>Wickets</Text></View>
         </View>
 
         <View style={styles.menu}>
+          <Pressable testID="view-full-stats-btn" style={styles.menuItem} onPress={() => user && router.push(`/player/${user.user_id}`)}>
+            <Ionicons name="stats-chart" size={22} color={colors.brandPrimary} />
+            <Text style={styles.menuText}>Full Player Stats</Text>
+            <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+          </Pressable>
           <Pressable testID="logout-btn" style={[styles.menuItem, styles.menuLast]} onPress={signOut}>
             <Ionicons name="log-out-outline" size={22} color={colors.error} />
             <Text style={[styles.menuText, styles.menuDanger]}>Log Out</Text>

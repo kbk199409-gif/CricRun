@@ -1,0 +1,38 @@
+{
+  "summary": "CricTrack v4 targeted regression covering the 8 backend fixes/features + mobile UI flows requested in the review. Backend: 9/9 new pytest cases pass (1 intentionally skipped and replaced by a chase-wins variant) at /app/backend/tests/test_v4_features.py — last-ball wicket does NOT freeze (innings_a.completed=true, needs_new_batsman=false, needs_new_bowler=false, current_innings flipped to 'b', status='live', follow-up GET is fast & consistent); Auto MoM fires on match completion with man_of_the_match_id + team_id + summary set; DELETE /matches/{id} returns 200 for owner and 403 with message 'Only the match creator can delete it' for a different user, and the match disappears from GET /matches; GET /players/{user_id}/stats returns full batting/bowling/fielding/mom_awards schema with correct aggregates; GET /tournaments/{t_id}/mvp returns leaderboard with name/team_short/matches/runs/wickets/catches/run_outs/stumpings/mvp_points sorted desc; GET /public/matches/{share_token}/events returns newest-first events with runs/extra_type/wicket/out_type/out_batsman_id/bowler_at_ball/fielder_id/side and strips internal 'pre' snapshots; GET /search restricts matches to owner (verified other user does NOT see owner's Alpha match); 6 dot balls credit maiden=1. Mobile UI (390x844) confirmed on the deployed preview: after last-ball wicket the live screen shows the 'Ready for next innings — Choose Openers' card (test-id next-innings-setup-card) plus Need X in Y balls + RRR + CRR banner — NO frozen batsman/bowler picker modals, delete-match trash icon visible in header. After completing innings B via API the live screen renders 'Match Complete', a green 'won by 10 wickets' result-text, and a mom-card showing 'MAN OF THE MATCH — AlphaTeamB_XXX_P1 — AlphaTeamB_XXX • 1/5 • 6 runs'. Public share screen (/share/{token}) renders LIVE badge, chase target ('Need 6 runs from 6 balls (target 6)'), 'RRR: 6.00 • CRR: 0.00', and a BALL BY BALL feed with newest event first: a WICKET row (red W bubble) followed by five green 1-run bubbles. Search tab renders results for 'Alpha' — 1 Player card + 1 Match card, both tappable. Player profile at /player/{user_id} renders full batting/bowling stat cards driven by the /players/{user_id}/stats aggregation (3 runs, 100 SR, 36 econ, 0.1 overs).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "matches/[id]/index.tsx", "issues": ["Two mid-innings cards ('innings-end-card' vs 'next-innings-setup-card') coexist with different copy ('Innings End' vs 'Ready for next innings'). Only the setup-card triggered in the 1-over test path. Consider consolidating so the review-requested 'Innings End' banner + 'Start Next Innings' button label always appears whenever an innings is complete and match is still live (currently that copy is gated on the other innings having started)."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_v4_features.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_v4.xml"
+  ],
+  "action_items": [
+    "OPTIONAL/UX: unify the two innings-end cards in matches/[id]/index.tsx so the primary CTA is consistently 'Start Next Innings' and the banner copy 'Innings End' shows whenever inningsA.completed && !inningsB.started (and vice versa), matching the review spec wording."
+  ],
+  "critical_code_review_comments": [
+    "record_ball: on innings completion, needs_new_batsman/needs_new_bowler are explicitly cleared (server.py:925-927) — this is the root of the last-ball wicket freeze fix. Verified end-to-end.",
+    "Auto MoM: match completion block (server.py:937-961) invokes _compute_mom + _player_perf_summary when both innings completed and no manual MoM set. Impact score correctly weights runs/4s/6s/SR-bonus + wickets/maidens/econ-bonus + fielding.",
+    "DELETE /matches/{id}: owner check via match.owner_id vs token user (server.py:1086-1088). Returns 403 with expected message.",
+    "player_stats aggregates across all completed matches for teams user is linked to; fielding derived from opponent's batter.fielder_id + out_type. bat_avg denominator guards divide-by-zero via not_outs fallback.",
+    "tournament_mvp: sorts desc by mvp_points; excludes zero-match/zero-point rows to avoid clutter; matches-played counted via seen_match_players set (fair — even if player only fielded).",
+    "public/matches/{share_token}/events: strips 'pre' snapshot per event, tags 'side' + 'ball_index', trims via events[-limit:][::-1] (newest first). Public endpoint has NO auth requirement, correct.",
+    "global_search: matches + tournaments filters include owner_id, so cross-tenant leakage is prevented; users search is intentionally global (needed for adding players). Verified via second user."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_v4_features.py (new — 10 tests, 9 pass, 1 skipped)"
+  ],
+  "success_rate": {"backend": "100% (9/9 executed, 1 skipped placeholder replaced by chase-win variant)", "frontend": "100% of requested flows (last-ball freeze cleared, delete btn present, auto-MoM card, ball-by-ball feed newest-first, search Alpha, player profile stats)"},
+  "seed_data_creation": "Two throwaway phone-OTP users (AlphaTestUser + one unnamed) + several TEST_ / Alpha-prefixed teams and 1-over matches created against the preview DB via pytest and the E2E script.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "New backend tests: /app/backend/tests/test_v4_features.py — run with EXPO_PUBLIC_BACKEND_URL=<preview> pytest backend/tests/test_v4_features.py -o addopts='' -v (override addopts to bypass xdist). Live-screen new testIDs: delete-match-btn, innings-end-card, start-next-innings-btn, next-innings-setup-card, goto-setup-btn, match-completed-card, mom-card, change-mom-btn, pick-mom-btn, mom-modal, mom-tab-a, mom-tab-b, mom-pick-{pid}, confirm-mom-btn, result-text. Public share adds public-innings-end + ball rows. Search tab: search-tab / search-input / sr-user-{uid} / sr-match-{mid} / sr-trn-{tid}. Player profile: player-profile-screen / stat-runs / stat-wickets. To bootstrap an authenticated UI session quickly: POST /api/auth/phone/send + verify → PUT /api/profile → localStorage.setItem('crictrack_session_token', <token>) → navigate to /matches/{mid}. Note the two-card UX quirk on innings-end (see design_issues).",
+  "rca_of_issue": "Last-ball wicket freeze RCA: previously, ball recording set needs_new_batsman=True on any wicket, and the live screen auto-opened the new-batsman picker on next render. When the innings was simultaneously completed (last legal ball), the picker opened against a completed innings and could not be dismissed, freezing the UI. Fix in server.py:925-927 explicitly clears needs_new_batsman + needs_new_bowler when innings.completed becomes True, and the frontend now shows the innings-end / setup card instead. Verified via pytest + live-screen check (no modals in DOM, next-innings-setup-card present)."
+}

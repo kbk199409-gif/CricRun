@@ -1,49 +1,42 @@
 # CricTrack — Product Requirements
 
 ## Overview
-A CricHeroes-style Expo mobile cricket scoring app: teams from real users, live ball-by-ball scoring, tournaments with NRR, public shareable live match links.
-
-## Users
-Casual/club cricket players and organizers who score matches on their phone and want to share the action.
+CricHeroes-style Expo mobile cricket scoring app: teams from real users, live ball-by-ball scoring, tournaments with NRR & MVP, public shareable live match links with ball-by-ball feed.
 
 ## Feature Set
 
 ### Auth
-- **Phone OTP (real)** — 6-digit code, 5-min TTL, 5-attempt lockout, 30s resend cooldown. Dev preview returns `dev_code` in send response and displays on OTP screen.
-- **Emergent Google Sign-In**.
-- 7-day session tokens (secure store / localStorage).
+- Phone OTP (real, 6-digit, 5-min TTL, 5-attempt lockout, 30s resend cooldown, dev-preview returns `dev_code`).
+- Emergent Google Sign-In.
 
-### Profile
+### Profile & Player Stats
 - Name, photo (Emergent Object Storage), batting hand, bowling style, role.
+- **Auto-aggregated career stats** at `/player/{user_id}`: batting (runs, average, SR, highest, 50s/100s), bowling (wickets, econ, average, SR, best), fielding (catches/run outs/stumpings), MoM awards.
 
 ### Teams
-- Create team, add players by searching registered users (linked identity via `user_id`) or as guests.
+- Create team; add players by searching registered users (linked identity) or as guests.
 - Duplicate registered users blocked; owner can remove players.
 
 ### Tournaments
-- Name, location (optional), start/end dates in **DD/MM/YYYY**, overs per match (5/6/8/10/12/15/20 or custom).
-- No T20/ODI/T10 classification.
-- Add teams. Attach matches. Auto-computed Points Table + NRR.
+- Name, location, DD/MM/YYYY dates, overs (preset or custom), no format classification.
+- Auto NRR points table + **auto MVP leaderboard** (batting/bowling/fielding-weighted points).
 
 ### Matches
-- Two teams + overs. Routes through:
-  1. **Toss** — winning team + Bat/Bowl → sets which team bats first.
-  2. **Sequential opener wizard** (3 steps) — Striker → Non-Striker → Opening Bowler.
-  3. **Live scoring** — run pads, extras (Wd/Nb/Bye/LB), swap strike, WICKET, UNDO.
-- **Wicket flow**: pick from Bowled, Caught, Run Out, LBW, Stumped, Hit Wicket, Retired Hurt. Fielder picker for Caught/Run Out/Stumped.
-- **End-of-over**: strike auto-swaps, next-bowler picker required.
-- **Innings ends** at overs limit / all-out / target reached.
-- **Match ends** with `winner_team_id` + human-readable `result_text`.
-- **Man of the Match** — pick after completion.
-- **Undo** — reverses last ball's runs, balls, strike, wickets, batter/bowler stats fully.
-
-### Live Scorecard (accessible during match)
-- Batting table with photo, runs, balls, 4s, 6s, SR, striker mark, dismissal line.
-- Bowling table with photo, overs, runs, wickets, economy.
-- Toss line displayed.
+- Two teams + overs → Toss → sequential opener wizard (Striker → Non-Striker → Bowler) → Live scoring.
+- **Live scoring**: run pads (0/1/2/3/4/6), extras (Wd/Nb/Bye/LB), Wicket with 7 dismissal types + fielder picker, Undo, Swap Strike.
+- **Innings auto-ends** at overs limit / all-out / target reached. Shows "INNINGS END" banner, then next-innings setup.
+- **Fixed last-ball wicket freeze** — no more hung modals.
+- **Match auto-ends** with winner + result text.
+- **Auto Man of the Match** — impact score across bat/bowl/field. Manual override still available.
+- **Delete Match** — owner-only.
+- **Live Scorecard** (accessible during match): batting (R/B/4s/6s/SR + strike mark + dismissal), bowling (O/M/R/W/Econ + maidens), extras total, fall of wickets.
 
 ### Public Share (no login)
-- Every match has a `share_token`. `/share/{token}` shows live score, batters on strike, current bowler with photos, auto-refresh every 5s.
+- `/share/{token}` shows both team scores in Cricbuzz-style header, LIVE badge, CRR/RRR, "Need X in Y balls", batting cards, current bowler, **ball-by-ball feed** with dot bubbles (green boundary, red wicket) and event labels ("FOUR", "WICKET — batter b bowler"). Auto-refresh every 5s.
+- `INNINGS END` banner visible to public viewer.
+
+### Search
+- Global search tab: players (by name/phone/email), matches, tournaments.
 
 ## Tech Stack
 Expo SDK 57, expo-router, FastAPI + Motor, Emergent Google Auth, Emergent Object Storage.
