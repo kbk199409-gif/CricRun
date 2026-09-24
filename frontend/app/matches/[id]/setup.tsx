@@ -141,6 +141,18 @@ export default function MatchSetup() {
         <View style={styles.banner}>
           <Text style={styles.bannerTitle}>{batTeam.name} batting</Text>
           <Text style={styles.bannerSub}>vs {bowlTeam.name} • {match.overs} overs</Text>
+          {(() => {
+            const capBat = batTeam.captain_id ? batPlayers.find((p: any) => p.player_id === batTeam.captain_id) : null;
+            const capBowl = bowlTeam.captain_id ? bowlPlayers.find((p: any) => p.player_id === bowlTeam.captain_id) : null;
+            if (!capBat && !capBowl) return null;
+            return (
+              <Text style={[styles.bannerSub, { marginTop: 8 }]} testID="captain-line">
+                {capBat ? `© ${capBat.name} (${batTeam.short_name})` : ""}
+                {capBat && capBowl ? " · " : ""}
+                {capBowl ? `© ${capBowl.name} (${bowlTeam.short_name})` : ""}
+              </Text>
+            );
+          })()}
         </View>
         <Text style={styles.stepTitle}>{stepTitles[step]}</Text>
         <Text style={styles.stepSub}>{stepSubs[step]}</Text>

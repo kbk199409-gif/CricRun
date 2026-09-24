@@ -102,6 +102,37 @@ const useStyles = makeStyles((c) => ({
 
   scorecardCta: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: c.brandTertiary, borderTopWidth: 1, borderBottomWidth: 1, borderColor: c.border, paddingVertical: 12, paddingHorizontal: 16 },
   scorecardCtaText: { color: c.onBrandTertiary, fontWeight: "800", fontSize: 13, letterSpacing: 0.5 },
+
+  // Best awards
+  awardsRow: { flexDirection: "row", marginHorizontal: 14, marginTop: 8, gap: 10 },
+  awardCol: { flex: 1, backgroundColor: c.surface, borderRadius: 14, padding: 12, borderWidth: 1, borderColor: c.border, alignItems: "center" },
+  awardIcon: { width: 44, height: 44, borderRadius: 999, alignItems: "center", justifyContent: "center", marginBottom: 6 },
+  awardTitle: { color: c.muted, fontSize: 10, fontWeight: "800", letterSpacing: 0.5 },
+  awardName: { color: c.onSurface, fontSize: 13, fontWeight: "800", marginTop: 2 },
+  awardMeta: { color: c.muted, fontSize: 11, textAlign: "center", marginTop: 2 },
+  awardAvatar: { width: 44, height: 44, borderRadius: 999, alignItems: "center", justifyContent: "center", overflow: "hidden", backgroundColor: c.brandTertiary },
+  awardAvatarImg: { width: 44, height: 44, borderRadius: 999 },
+
+  // Player info card overlay
+  infoOverlay: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "center", alignItems: "center", padding: 24, zIndex: 20 },
+  infoCard: { backgroundColor: c.surface, borderRadius: 20, padding: 20, width: "100%", maxWidth: 380, alignItems: "center" },
+  infoTag: { color: c.brandPrimary, fontSize: 11, fontWeight: "800", letterSpacing: 1 },
+  infoAvatar: { width: 72, height: 72, borderRadius: 999, backgroundColor: c.brandTertiary, alignItems: "center", justifyContent: "center", overflow: "hidden", marginTop: 8 },
+  infoAvatarImg: { width: 72, height: 72, borderRadius: 999 },
+  infoAvatarText: { color: c.onBrandTertiary, fontWeight: "800", fontSize: 24 },
+  infoName: { color: c.onSurface, fontSize: 20, fontWeight: "800", marginTop: 8 },
+  infoStyle: { color: c.muted, fontSize: 13, marginTop: 2 },
+  infoStatsRow: { flexDirection: "row", marginTop: 14, width: "100%", justifyContent: "space-around" },
+  infoStatCol: { alignItems: "center" },
+  infoStatLbl: { color: c.muted, fontSize: 10, fontWeight: "700", letterSpacing: 0.5 },
+  infoStatVal: { color: c.onSurface, fontSize: 18, fontWeight: "800", marginTop: 2 },
+  infoDismiss: { color: c.muted, fontSize: 11, marginTop: 12 },
+
+  // Who's out / strike segmented
+  segRow: { flexDirection: "row", padding: 12, gap: 10 },
+  segBtn: { flex: 1, borderRadius: 12, borderWidth: 1.5, borderColor: c.border, backgroundColor: c.surface, padding: 14, alignItems: "center", flexDirection: "row", gap: 10, justifyContent: "center" },
+  segBtnActive: { borderColor: c.brandPrimary, backgroundColor: c.brandTertiary },
+  segText: { color: c.onSurface, fontWeight: "700", fontSize: 14 },
 }));
 
 const OUT_TYPES = [
@@ -162,8 +193,17 @@ export default function LiveMatch() {
   // Wicket flow
   const [showWicketType, setShowWicketType] = useState(false);
   const [showFielder, setShowFielder] = useState(false);
-  const [pendingWicket, setPendingWicket] = useState<{ out_type: string; runs: number } | null>(null);
+  const [showWhoOut, setShowWhoOut] = useState(false);
+  const [pendingWicket, setPendingWicket] = useState<{ out_type: string; runs: number; out_batsman_id?: string; fielder_id?: string } | null>(null);
   const [pickedFielder, setPickedFielder] = useState<string>("");
+  // Strike-position picker (after run-out new batsman)
+  const [showStrikePick, setShowStrikePick] = useState(false);
+  const [newBatsmanOnStrike, setNewBatsmanOnStrike] = useState<boolean | null>(null);
+  const [wasRunOut, setWasRunOut] = useState(false);
+  // Info card overlay (auto-show when new batsman/bowler enters)
+  const [infoCard, setInfoCard] = useState<{ kind: "batsman" | "bowler"; player: any; stats: any | null } | null>(null);
+  const [seenBatEntries, setSeenBatEntries] = useState<Record<string, boolean>>({});
+  const [seenBowlSpells, setSeenBowlSpells] = useState<Record<string, number>>({});
   // MoM
   const [showMoM, setShowMoM] = useState(false);
   const [momTab, setMomTab] = useState<"a" | "b">("a");
@@ -246,11 +286,13 @@ export default function LiveMatch() {
       const merged: any = { ...body };
       if (batsmanForNextBall) merged.new_batsman_id = batsmanForNextBall;
       if (bowlerForNextBall) merged.new_bowler_id = bowlerForNextBall;
+      if (newBatsmanOnStrike !== null) merged.new_batsman_on_strike = newBatsmanOnStrike;
       const r = await apiFetch(`/api/matches/${id}/innings/${match.current_innings}/ball`, {
         method: "POST", body: JSON.stringify(merged),
       });
       if (r.ok) {
         setBatsmanForNextBall(""); setBowlerForNextBall(""); setExtra("none");
+        setNewBatsmanOnStrike(null); setWasRunOut(false);
         await load();
       } else {
         const j = await r.json().catch(() => ({}));
@@ -259,6 +301,20 @@ export default function LiveMatch() {
     } catch {}
     setSaving(false);
   };
+
+  // Fetch mini stats for the player and show the info-card overlay
+  const showPlayerCard = useCallback(async (player: any, kind: "batsman" | "bowler") => {
+    setInfoCard({ kind, player, stats: null });
+    if (player?.user_id) {
+      try {
+        const r = await apiFetch(`/api/players/${player.user_id}/mini`);
+        if (r.ok) {
+          const d = await r.json();
+          setInfoCard((prev) => (prev && prev.player?.player_id === player.player_id ? { ...prev, stats: d } : prev));
+        }
+      } catch {}
+    }
+  }, [apiFetch]);
 
   const undo = async () => {
     if (!match) return;
@@ -291,10 +347,32 @@ export default function LiveMatch() {
     setShowWicketType(true);
   };
 
-  const submitWicketWith = (out_type: string, fielder_id?: string) => {
+  const submitWicketWith = (out_type: string, opts?: { fielder_id?: string; out_batsman_id?: string }) => {
     const runs = pendingWicket?.runs ?? 0;
-    sendBall({ runs, extra_type: extra, wicket: true, out_type, fielder_id });
-    setPendingWicket(null); setPickedFielder(""); setShowFielder(false); setShowWicketType(false);
+    const body: any = { runs, extra_type: extra, wicket: true, out_type };
+    if (opts?.fielder_id) body.fielder_id = opts.fielder_id;
+    if (opts?.out_batsman_id) body.out_batsman_id = opts.out_batsman_id;
+    else if (pendingWicket?.out_batsman_id) body.out_batsman_id = pendingWicket.out_batsman_id;
+    if (out_type === "run_out") setWasRunOut(true); else setWasRunOut(false);
+    sendBall(body);
+    setPendingWicket(null); setPickedFielder(""); setShowFielder(false); setShowWicketType(false); setShowWhoOut(false);
+  };
+
+  const onPickOutType = (out_type: string) => {
+    if (out_type === "run_out") {
+      // Run-out: ask WHO GOT OUT first (striker or non-striker)
+      setPendingWicket({ out_type: "run_out", runs: 0 });
+      setShowWicketType(false);
+      setShowWhoOut(true);
+      return;
+    }
+    if (OUT_NEEDS_FIELDER[out_type]) {
+      setPendingWicket({ out_type, runs: 0 });
+      setShowWicketType(false);
+      setShowFielder(true);
+    } else {
+      submitWicketWith(out_type);
+    }
   };
 
   const shareUrl = useMemo(() => {
@@ -557,6 +635,39 @@ export default function LiveMatch() {
                 <Text style={styles.primaryBtnText}>Select Man of the Match</Text>
               </Pressable>
             )}
+
+            {(match.best_batter_id || match.best_bowler_id) && (
+              <View style={styles.awardsRow} testID="best-awards-row">
+                {match.best_batter_id && (() => {
+                  const bb = playerObj(match.best_batter_id);
+                  const pic = bb?.profile_picture_path ? fileUrl(bb.profile_picture_path, token) : bb?.picture;
+                  return (
+                    <Pressable style={styles.awardCol} testID="best-batter-card" onPress={() => openPlayerProfile(bb?.player_id || null)}>
+                      <View style={[styles.awardAvatar, { backgroundColor: colors.brandTertiary }]}>
+                        {pic ? <Image source={{ uri: pic, headers: token ? { Authorization: `Bearer ${token}` } : undefined }} style={styles.awardAvatarImg} /> : <Text style={styles.playerAvatarText}>{bb?.name?.[0]}</Text>}
+                      </View>
+                      <Text style={styles.awardTitle}>🏏 BEST BATTER</Text>
+                      <Text style={styles.awardName} numberOfLines={1}>{bb?.name || "-"}</Text>
+                      <Text style={styles.awardMeta} numberOfLines={2}>{match.best_batter_summary}</Text>
+                    </Pressable>
+                  );
+                })()}
+                {match.best_bowler_id && (() => {
+                  const bb = playerObj(match.best_bowler_id);
+                  const pic = bb?.profile_picture_path ? fileUrl(bb.profile_picture_path, token) : bb?.picture;
+                  return (
+                    <Pressable style={styles.awardCol} testID="best-bowler-card" onPress={() => openPlayerProfile(bb?.player_id || null)}>
+                      <View style={[styles.awardAvatar, { backgroundColor: colors.error + "30" }]}>
+                        {pic ? <Image source={{ uri: pic, headers: token ? { Authorization: `Bearer ${token}` } : undefined }} style={styles.awardAvatarImg} /> : <Text style={styles.playerAvatarText}>{bb?.name?.[0]}</Text>}
+                      </View>
+                      <Text style={styles.awardTitle}>🎯 BEST BOWLER</Text>
+                      <Text style={styles.awardName} numberOfLines={1}>{bb?.name || "-"}</Text>
+                      <Text style={styles.awardMeta} numberOfLines={2}>{match.best_bowler_summary}</Text>
+                    </Pressable>
+                  );
+                })()}
+              </View>
+            )}
           </>
         )}
 
@@ -583,7 +694,18 @@ export default function LiveMatch() {
               );
             })}
           </ScrollView>
-          <Pressable testID="confirm-batsman-btn" style={styles.modalBtn} onPress={() => { setBatsmanForNextBall(pickedBatsman); setPickedBatsman(""); setShowNewBatsman(false); }} disabled={!pickedBatsman}>
+          <Pressable testID="confirm-batsman-btn" style={styles.modalBtn} onPress={() => {
+            setBatsmanForNextBall(pickedBatsman);
+            setShowNewBatsman(false);
+            // Auto-open the info card
+            const p = availableBatsmen.find((x: any) => x.player_id === pickedBatsman);
+            if (p) showPlayerCard(p, "batsman");
+            setPickedBatsman("");
+            if (wasRunOut) {
+              // Ask who's on strike
+              setShowStrikePick(true);
+            }
+          }} disabled={!pickedBatsman}>
             <Text style={styles.modalBtnText}>Confirm</Text>
           </Pressable>
         </View>
@@ -609,7 +731,13 @@ export default function LiveMatch() {
               );
             })}
           </ScrollView>
-          <Pressable testID="confirm-bowler-btn" style={styles.modalBtn} onPress={() => { setBowlerForNextBall(pickedBowler); setPickedBowler(""); setShowNewBowler(false); }} disabled={!pickedBowler}>
+          <Pressable testID="confirm-bowler-btn" style={styles.modalBtn} onPress={() => {
+            setBowlerForNextBall(pickedBowler);
+            setShowNewBowler(false);
+            const p = availableBowlers.find((x: any) => x.player_id === pickedBowler);
+            if (p) showPlayerCard(p, "bowler");
+            setPickedBowler("");
+          }} disabled={!pickedBowler}>
             <Text style={styles.modalBtnText}>Confirm</Text>
           </Pressable>
         </View>
@@ -625,15 +753,7 @@ export default function LiveMatch() {
           </View>
           <View style={styles.outTypeGrid}>
             {OUT_TYPES.map((o) => (
-              <Pressable key={o.key} testID={`out-${o.key}`} style={styles.outTypeBtn} onPress={() => {
-                if (OUT_NEEDS_FIELDER[o.key]) {
-                  setPendingWicket({ out_type: o.key, runs: 0 });
-                  setShowWicketType(false);
-                  setShowFielder(true);
-                } else {
-                  submitWicketWith(o.key);
-                }
-              }}>
+              <Pressable key={o.key} testID={`out-${o.key}`} style={styles.outTypeBtn} onPress={() => onPickOutType(o.key)}>
                 <Ionicons name={o.icon as any} size={24} color={colors.brandPrimary} />
                 <Text style={styles.outTypeText}>{o.label}</Text>
               </Pressable>
@@ -666,7 +786,7 @@ export default function LiveMatch() {
               );
             })}
           </ScrollView>
-          <Pressable testID="confirm-fielder-btn" style={styles.modalBtn} onPress={() => pendingWicket && submitWicketWith(pendingWicket.out_type, pickedFielder)} disabled={!pickedFielder}>
+          <Pressable testID="confirm-fielder-btn" style={styles.modalBtn} onPress={() => pendingWicket && submitWicketWith(pendingWicket.out_type, { fielder_id: pickedFielder, out_batsman_id: pendingWicket.out_batsman_id })} disabled={!pickedFielder}>
             <Text style={styles.modalBtnText}>Confirm Wicket</Text>
           </Pressable>
         </View>
@@ -725,6 +845,91 @@ export default function LiveMatch() {
           </View>
         </View>
       </Modal>
+      {/* Who got out? — for run-out */}
+      <Modal visible={showWhoOut} animationType="slide" onRequestClose={() => setShowWhoOut(false)} transparent={false}>
+        <View style={[styles.modal, { paddingTop: insets.top }]} testID="whoout-modal">
+          <View style={styles.modalHead}>
+            <Pressable style={styles.hbtn} onPress={() => { setShowWhoOut(false); setPendingWicket(null); }}><Ionicons name="close" size={24} color={colors.onSurface} /></Pressable>
+            <Text style={styles.modalTitle}>WHO GOT OUT?</Text>
+            <View style={{ width: 32 }} />
+          </View>
+          <Text style={[styles.modalSub, { paddingTop: 12 }]}>Select the batter who was run out.</Text>
+          <View style={styles.segRow}>
+            {[strikerObj, nonStrikerObj].filter(Boolean).map((p: any) => (
+              <Pressable key={p.player_id} testID={`whoout-${p.player_id}`} style={[styles.segBtn, pendingWicket?.out_batsman_id === p.player_id && styles.segBtnActive]} onPress={() => setPendingWicket((pw) => pw ? { ...pw, out_batsman_id: p.player_id } : pw)}>
+                <View style={styles.modalAvatar}>{(p.profile_picture_path || p.picture) ? <Image source={{ uri: fileUrl(p.profile_picture_path, token) || p.picture, headers: token ? { Authorization: `Bearer ${token}` } : undefined }} style={styles.modalAvatarImg} /> : <Text style={styles.modalAvatarText}>{p.name?.[0]}</Text>}</View>
+                <View>
+                  <Text style={styles.segText}>{p.name}</Text>
+                  <Text style={{ color: colors.muted, fontSize: 11 }}>{p.player_id === strikerObj?.player_id ? "Striker" : "Non-Striker"}</Text>
+                </View>
+              </Pressable>
+            ))}
+          </View>
+          <Pressable style={styles.modalBtn} testID="confirm-whoout-btn" onPress={() => { setShowWhoOut(false); setShowFielder(true); }} disabled={!pendingWicket?.out_batsman_id}>
+            <Text style={styles.modalBtnText}>Next: pick fielder</Text>
+          </Pressable>
+        </View>
+      </Modal>
+
+      {/* Who's on strike? — for run-out new batsman */}
+      <Modal visible={showStrikePick} animationType="fade" transparent onRequestClose={() => setShowStrikePick(false)}>
+        <View style={styles.infoOverlay}>
+          <View style={styles.infoCard}>
+            <Text style={styles.infoTag}>WHO IS ON STRIKE?</Text>
+            <Text style={styles.infoStyle}>Pick who faces the next ball.</Text>
+            <View style={{ height: 12 }} />
+            <View style={{ width: "100%", flexDirection: "row", gap: 10 }}>
+              <Pressable testID="strike-new" style={[styles.segBtn, newBatsmanOnStrike === true && styles.segBtnActive]} onPress={() => setNewBatsmanOnStrike(true)}>
+                <Text style={styles.segText}>New Batter{"\n"}(on strike)</Text>
+              </Pressable>
+              <Pressable testID="strike-existing" style={[styles.segBtn, newBatsmanOnStrike === false && styles.segBtnActive]} onPress={() => setNewBatsmanOnStrike(false)}>
+                <Text style={styles.segText}>{playerName(curInn.striker_id || curInn.non_striker_id) || "Existing"}{"\n"}(stays on strike)</Text>
+              </Pressable>
+            </View>
+            <Pressable style={[styles.modalBtn, { alignSelf: "stretch", marginTop: 14 }]} onPress={() => setShowStrikePick(false)} disabled={newBatsmanOnStrike === null}>
+              <Text style={styles.modalBtnText}>Confirm</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {/* NEW BATSMAN / NEW BOWLER INFO OVERLAY */}
+      {infoCard && (
+        <Pressable style={styles.infoOverlay} testID="info-card-overlay" onPress={() => setInfoCard(null)}>
+          <View style={styles.infoCard} onStartShouldSetResponder={() => true}>
+            <Text style={styles.infoTag}>NEW {infoCard.kind === "batsman" ? "BATTER" : "BOWLER"}</Text>
+            <View style={styles.infoAvatar}>
+              {(infoCard.player?.profile_picture_path || infoCard.player?.picture) ?
+                <Image source={{ uri: fileUrl(infoCard.player?.profile_picture_path, token) || infoCard.player?.picture, headers: token ? { Authorization: `Bearer ${token}` } : undefined }} style={styles.infoAvatarImg} /> :
+                <Text style={styles.infoAvatarText}>{infoCard.player?.name?.[0]}</Text>}
+            </View>
+            <Text style={styles.infoName}>{infoCard.player?.name}</Text>
+            <Text style={styles.infoStyle}>{infoCard.kind === "batsman" ? (infoCard.player?.batting_style || "Batter") : (infoCard.player?.bowling_style || "Bowler")}</Text>
+            {infoCard.stats ? (
+              infoCard.kind === "batsman" ? (
+                <View style={styles.infoStatsRow}>
+                  <View style={styles.infoStatCol}><Text style={styles.infoStatLbl}>Matches</Text><Text style={styles.infoStatVal}>{infoCard.stats.matches}</Text></View>
+                  <View style={styles.infoStatCol}><Text style={styles.infoStatLbl}>Runs</Text><Text style={styles.infoStatVal}>{infoCard.stats.batting.runs}</Text></View>
+                  <View style={styles.infoStatCol}><Text style={styles.infoStatLbl}>Highest</Text><Text style={styles.infoStatVal}>{infoCard.stats.batting.highest}</Text></View>
+                  <View style={styles.infoStatCol}><Text style={styles.infoStatLbl}>Avg</Text><Text style={styles.infoStatVal}>{Number(infoCard.stats.batting.average || 0).toFixed(1)}</Text></View>
+                  <View style={styles.infoStatCol}><Text style={styles.infoStatLbl}>SR</Text><Text style={styles.infoStatVal}>{Number(infoCard.stats.batting.strike_rate || 0).toFixed(1)}</Text></View>
+                </View>
+              ) : (
+                <View style={styles.infoStatsRow}>
+                  <View style={styles.infoStatCol}><Text style={styles.infoStatLbl}>Matches</Text><Text style={styles.infoStatVal}>{infoCard.stats.matches}</Text></View>
+                  <View style={styles.infoStatCol}><Text style={styles.infoStatLbl}>Wickets</Text><Text style={styles.infoStatVal}>{infoCard.stats.bowling.wickets}</Text></View>
+                  <View style={styles.infoStatCol}><Text style={styles.infoStatLbl}>Best</Text><Text style={styles.infoStatVal}>{infoCard.stats.bowling.best || "-"}</Text></View>
+                  <View style={styles.infoStatCol}><Text style={styles.infoStatLbl}>Econ</Text><Text style={styles.infoStatVal}>{Number(infoCard.stats.bowling.economy || 0).toFixed(1)}</Text></View>
+                </View>
+              )
+            ) : (
+              <Text style={styles.infoDismiss}>{infoCard.player?.user_id ? "Loading career stats…" : "Guest player — no stats available"}</Text>
+            )}
+            <Text style={styles.infoDismiss}>Tap anywhere to close</Text>
+          </View>
+        </Pressable>
+      )}
+
     </View>
   );
 }

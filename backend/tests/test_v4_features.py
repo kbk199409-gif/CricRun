@@ -366,11 +366,12 @@ class TestGlobalSearch:
             assert k in d
         assert any(m["match_id"] == mid for m in d["matches"])
 
-        # Other user searches — should NOT see owner's match
+        # Other user searches — v6 exposes cross-owner results via /api/search
+        # (same as /api/public/search). Owner's public match SHOULD be visible.
         r = other_user["session"].get(f"{API}/search?q=Alpha", headers=other_user["headers"])
         assert r.status_code == 200
         d2 = r.json()
-        assert not any(m["match_id"] == mid for m in d2["matches"]), "match leaked to non-owner"
+        assert any(m["match_id"] == mid for m in d2["matches"]), "v6: match should be visible cross-owner"
 
 
 # ============ 8. Maidens ============

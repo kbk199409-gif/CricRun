@@ -27,14 +27,23 @@ function AuthGate() {
     if (loading) return;
     const inAuth = segments[0] === undefined || segments[0] === "index" || segments[0] === "otp";
     const inProfileSetup = segments[0] === "profile-setup";
-    const inPublic = segments[0] === "share";
-    // Allow /player/[id] with ?public=1 to be viewed without auth (used from public share)
-    const inPlayerPublic = segments[0] === "player" && (typeof window !== "undefined" && window.location?.search?.includes("public=1"));
+    const inPublic = segments[0] === "share" || segments[0] === "invite";
+    // Allow /player/[id]?public=1 and /teams/[id]?public=1 to be viewed without auth
+    const hasPublicFlag = typeof window !== "undefined" && window.location?.search?.includes("public=1");
+    const inPublicByFlag = (segments[0] === "player" || segments[0] === "teams") && hasPublicFlag;
 
-    if (inPublic || inPlayerPublic) return; // public routes bypass auth
+    if (inPublic || inPublicByFlag) return; // public routes bypass auth
 
     if (!user) {
-      if (!inAuth) router.replace("/");
+      if (!inAuth && !inPublic && !inPublicByFlag) {
+        // Preserve the deep link so that after login the user lands back where they wanted
+        const path = (typeof window !== "undefined" ? window.location?.pathname + window.location?.search : "") || "";
+        if (segments[0] === "invite" && path) {
+          router.replace(`/?next=${encodeURIComponent(path)}`);
+        } else {
+          router.replace("/");
+        }
+      }
       return;
     }
     if (!user.profile_complete) {
@@ -42,7 +51,10 @@ function AuthGate() {
       return;
     }
     if (inAuth || inProfileSetup) {
-      router.replace("/(tabs)");
+      // Honour ?next=<deep-link> after successful login
+      const nextPath = typeof window !== "undefined" ? new URLSearchParams(window.location?.search || "").get("next") : null;
+      if (nextPath) router.replace(nextPath as any);
+      else router.replace("/(tabs)");
     }
   }, [user, loading, segments]);
 

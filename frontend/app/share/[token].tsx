@@ -1,5 +1,5 @@
-import { View, Text, ScrollView, ActivityIndicator, Image, Pressable } from "react-native";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { View, Text, ScrollView, ActivityIndicator, Image, Pressable, Animated, Easing } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { makeStyles, useTheme } from "@/src/theme";
@@ -82,6 +82,35 @@ const useStyles = makeStyles((c) => ({
   extraText: { color: c.muted, fontSize: 13 },
   empty: { alignItems: "center", padding: 24 },
   emptyText: { color: c.muted, marginTop: 8 },
+
+  // Celebration overlay
+  celebOverlay: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(0,0,0,0.5)", alignItems: "center", justifyContent: "center", zIndex: 30 },
+  celebBadge: { width: 220, height: 220, borderRadius: 999, alignItems: "center", justifyContent: "center" },
+  celebFour: { backgroundColor: c.brandPrimary },
+  celebSix: { backgroundColor: "#FBBF24" },
+  celebWicket: { backgroundColor: c.error },
+  celebBig: { color: "#FFFFFF", fontSize: 96, fontWeight: "900", letterSpacing: -3 },
+  celebSmall: { color: "#FFFFFF", fontSize: 28, fontWeight: "800", marginTop: 4, letterSpacing: 2 },
+
+  // New player card
+  npOverlay: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", justifyContent: "center", padding: 24, zIndex: 25 },
+  npCard: { backgroundColor: c.surface, borderRadius: 20, padding: 20, width: "100%", maxWidth: 380, alignItems: "center" },
+  npTag: { color: c.brandPrimary, fontSize: 11, fontWeight: "800", letterSpacing: 1 },
+  npAvatar: { width: 72, height: 72, borderRadius: 999, backgroundColor: c.brandTertiary, alignItems: "center", justifyContent: "center", overflow: "hidden", marginTop: 8 },
+  npAvatarImg: { width: 72, height: 72, borderRadius: 999 },
+  npAvatarText: { color: c.onBrandTertiary, fontWeight: "800", fontSize: 24 },
+  npName: { color: c.onSurface, fontSize: 20, fontWeight: "800", marginTop: 8 },
+  npStyle: { color: c.muted, fontSize: 13, marginTop: 2 },
+  npStatsRow: { flexDirection: "row", marginTop: 14, width: "100%", justifyContent: "space-around" },
+  npStatCol: { alignItems: "center" },
+  npStatLbl: { color: c.muted, fontSize: 10, fontWeight: "700", letterSpacing: 0.5 },
+  npStatVal: { color: c.onSurface, fontSize: 18, fontWeight: "800", marginTop: 2 },
+
+  // Captains
+  captains: { flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 16, paddingVertical: 10, backgroundColor: c.surface, borderBottomWidth: 1, borderBottomColor: c.border },
+  captLine: { color: c.muted, fontSize: 11, flex: 1 },
+  captLineB: { textAlign: "right" },
+  captBold: { color: c.onSurface, fontWeight: "700" },
 }));
 
 function pubImage(path?: string | null): string | undefined {
@@ -137,6 +166,13 @@ export default function PublicShare() {
   const [events, setEvents] = useState<any[]>([]);
   const [view, setView] = useState<"live" | "scorecard">("live");
   const [scTab, setScTab] = useState<"a" | "b">("a");
+  const [celeb, setCeleb] = useState<null | "four" | "six" | "wicket">(null);
+  const celebAnim = useRef(new Animated.Value(0)).current;
+  const seenIndex = useRef<number | null>(null);
+  // Info card for new batsman / bowler
+  const [npCard, setNpCard] = useState<null | { kind: "batsman" | "bowler"; player: any; stats: any | null }>(null);
+  const prevStrikerRef = useRef<string | null>(null);
+  const prevBowlerRef = useRef<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -151,9 +187,34 @@ export default function PublicShare() {
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 5000);
+    const t = setInterval(load, 3000);
     return () => clearInterval(t);
   }, [load]);
+
+  // Detect NEW event → celebration overlay for 4/6/W
+  useEffect(() => {
+    if (!events.length) { seenIndex.current = null; return; }
+    // events are newest-first; the LATEST event is index 0
+    const latest = events[0];
+    const key = `${latest.at}-${latest.side}-${latest.ball_index}`;
+    if (seenIndex.current === key) return;
+    const wasFirstLoad = seenIndex.current === null;
+    seenIndex.current = key;
+    if (wasFirstLoad) return; // don't celebrate stale events on first mount
+    let type: "four" | "six" | "wicket" | null = null;
+    if (latest.wicket) type = "wicket";
+    else if (latest.extra_type === "none" && latest.runs === 4) type = "four";
+    else if (latest.extra_type === "none" && latest.runs === 6) type = "six";
+    if (type) {
+      setCeleb(type);
+      celebAnim.setValue(0);
+      Animated.sequence([
+        Animated.timing(celebAnim, { toValue: 1, duration: 200, useNativeDriver: true, easing: Easing.out(Easing.back(2)) }),
+        Animated.delay(1300),
+        Animated.timing(celebAnim, { toValue: 0, duration: 250, useNativeDriver: true }),
+      ]).start(() => setCeleb(null));
+    }
+  }, [events, celebAnim]);
 
   const teams = useMemo(() => data ? { a: data.team_a, b: data.team_b } : { a: null, b: null }, [data]);
   const playerName = useCallback((pid?: string | null): string => {
@@ -171,6 +232,45 @@ export default function PublicShare() {
     if (!p || !p.user_id) return;
     router.push(`/player/${p.user_id}?public=1`);
   }, [playerObj, router]);
+
+  // Fetch mini stats for a player (public endpoint)
+  const showPlayerCard = useCallback(async (p: any, kind: "batsman" | "bowler") => {
+    setNpCard({ kind, player: p, stats: null });
+    setTimeout(() => setNpCard((prev) => (prev && prev.player?.player_id === p.player_id ? prev : prev)), 0);
+    if (p?.user_id) {
+      try {
+        const r = await fetch(`${API}/api/public/players/${p.user_id}/mini`);
+        if (r.ok) {
+          const d = await r.json();
+          setNpCard((prev) => (prev && prev.player?.player_id === p.player_id ? { ...prev, stats: d } : prev));
+        }
+      } catch {}
+    }
+    // Auto-dismiss after 5 seconds
+    setTimeout(() => setNpCard((prev) => (prev && prev.player?.player_id === p.player_id ? null : prev)), 5000);
+  }, []);
+
+  // Detect NEW batsman on strike / NEW bowler and show info card
+  useEffect(() => {
+    if (!data) return;
+    const m = data.match;
+    const inn = m.current_innings === "a" ? m.innings_a : m.innings_b;
+    if (!inn || inn.completed || m.status === "completed") return;
+    const striker = inn.striker_id;
+    const bowler = inn.bowler_id;
+    // First-time init: don't celebrate initial openers
+    if (prevStrikerRef.current === null) { prevStrikerRef.current = striker; prevBowlerRef.current = bowler; return; }
+    if (striker && striker !== prevStrikerRef.current) {
+      const p = playerObj(striker);
+      if (p) showPlayerCard(p, "batsman");
+      prevStrikerRef.current = striker;
+    }
+    if (bowler && bowler !== prevBowlerRef.current) {
+      const p = playerObj(bowler);
+      if (p) showPlayerCard(p, "bowler");
+      prevBowlerRef.current = bowler;
+    }
+  }, [data, playerObj, showPlayerCard]);
 
   if (!data) return <View style={[styles.root, { alignItems: "center", justifyContent: "center", paddingTop: insets.top }]}><ActivityIndicator color={colors.brandPrimary} /></View>;
 
@@ -202,14 +302,27 @@ export default function PublicShare() {
   const currentBowler = (bowlTeam?.players || []).find((p: any) => p.player_id === inn.bowler_id);
   const tossLine = m.toss_winner_team_id ? `${m.toss_winner_team_id === m.team_a_id ? m.team_a_name : m.team_b_name} chose to ${m.toss_decision}` : "";
 
-  // Scorecard tab data
+  // Scorecard tab data — RENDER IN BATTING ORDER via batted_ids
   const scInn = scTab === "a" ? m.innings_a : m.innings_b;
   const scBatTeam = scTab === "a" ? teams.a : teams.b;
   const scBowlTeam = scTab === "a" ? teams.b : teams.a;
-  const scBattersList = (scBatTeam?.players || []).filter((p: any) => (scInn?.batters?.[p.player_id] || scInn?.batted_ids?.includes(p.player_id)));
+  const scBatTeamPlayers: any[] = scBatTeam?.players || [];
+  const scBattedOrder: string[] = scInn?.batted_ids || [];
+  const scBattersList: any[] = scBattedOrder
+    .map((pid) => scBatTeamPlayers.find((p) => p.player_id === pid))
+    .filter(Boolean) as any[];
   const scBowlersList = (scBowlTeam?.players || []).filter((p: any) => scInn?.bowlers?.[p.player_id]);
   const scOvers = `${Math.floor((scInn?.balls || 0) / 6)}.${(scInn?.balls || 0) % 6}`;
   const scExtras = Object.values(scInn?.bowlers || {}).reduce((a: number, b: any) => a + (b.extras || 0), 0);
+
+  // Captains
+  const captA = m.captain_a_id ? (teams.a?.players || []).find((p: any) => p.player_id === m.captain_a_id) : null;
+  const captB = m.captain_b_id ? (teams.b?.players || []).find((p: any) => p.player_id === m.captain_b_id) : null;
+
+  // Awards
+  const bestBat = m.best_batter_id ? playerObj(m.best_batter_id) : null;
+  const bestBowl = m.best_bowler_id ? playerObj(m.best_bowler_id) : null;
+  const momPlayer = m.man_of_the_match_id ? playerObj(m.man_of_the_match_id) : null;
 
   const dismissalText = (b: any): string => {
     if (!b?.out_type) return "not out";
@@ -246,6 +359,46 @@ export default function PublicShare() {
             <Text style={[styles.tabText, view === "scorecard" && styles.tabTextActive]}>SCORECARD</Text>
           </Pressable>
         </View>
+
+        {(captA || captB) && (
+          <View style={styles.captains}>
+            <Text style={styles.captLine}>© <Text style={styles.captBold}>{captA?.name || "-"}</Text> · {m.team_a_short}</Text>
+            <Text style={[styles.captLine, styles.captLineB]}>{m.team_b_short} · <Text style={styles.captBold}>{captB?.name || "-"}</Text> ©</Text>
+          </View>
+        )}
+
+        {isCompleted && (bestBat || bestBowl || momPlayer) && (
+          <View style={{ paddingHorizontal: 16, paddingTop: 16 }} testID="public-awards">
+            <Text style={[styles.sectionHead, { marginLeft: 0, marginTop: 0 }]}>Awards</Text>
+            {momPlayer && (
+              <Pressable style={styles.card} onPress={() => openPlayer(momPlayer.player_id)}>
+                <View style={[styles.avatar, { backgroundColor: "#FBBF2440" }]}>{(momPlayer.profile_picture_path ? <Image source={{ uri: pubImage(momPlayer.profile_picture_path) }} style={styles.avatarImg} /> : momPlayer.picture ? <Image source={{ uri: momPlayer.picture }} style={styles.avatarImg} /> : <Text style={styles.avatarText}>{momPlayer.name?.[0]}</Text>)}</View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.name, styles.linkable]}>🏅 {momPlayer.name} · Man of the Match</Text>
+                  {m.man_of_the_match_summary && <Text style={styles.meta2}>{m.man_of_the_match_summary}</Text>}
+                </View>
+              </Pressable>
+            )}
+            {bestBat && (
+              <Pressable style={styles.card} onPress={() => openPlayer(bestBat.player_id)}>
+                <View style={styles.avatar}>{(bestBat.profile_picture_path ? <Image source={{ uri: pubImage(bestBat.profile_picture_path) }} style={styles.avatarImg} /> : bestBat.picture ? <Image source={{ uri: bestBat.picture }} style={styles.avatarImg} /> : <Text style={styles.avatarText}>{bestBat.name?.[0]}</Text>)}</View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.name, styles.linkable]}>🏏 {bestBat.name} · Best Batter</Text>
+                  {m.best_batter_summary && <Text style={styles.meta2}>{m.best_batter_summary}</Text>}
+                </View>
+              </Pressable>
+            )}
+            {bestBowl && (
+              <Pressable style={styles.card} onPress={() => openPlayer(bestBowl.player_id)}>
+                <View style={[styles.avatar, { backgroundColor: "#EF444440" }]}>{(bestBowl.profile_picture_path ? <Image source={{ uri: pubImage(bestBowl.profile_picture_path) }} style={styles.avatarImg} /> : bestBowl.picture ? <Image source={{ uri: bestBowl.picture }} style={styles.avatarImg} /> : <Text style={styles.avatarText}>{bestBowl.name?.[0]}</Text>)}</View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.name, styles.linkable]}>🎯 {bestBowl.name} · Best Bowler</Text>
+                  {m.best_bowler_summary && <Text style={styles.meta2}>{m.best_bowler_summary}</Text>}
+                </View>
+              </Pressable>
+            )}
+          </View>
+        )}
 
         {view === "live" && (
           <>
@@ -436,9 +589,59 @@ export default function PublicShare() {
           </>
         )}
 
-        <Text style={styles.hint}>Auto-refresh every 5 seconds • Powered by CricTrack</Text>
+        <Text style={styles.hint}>Live updates every 3 seconds • Powered by CricTrack</Text>
         <View style={{ height: 32 + insets.bottom }} />
       </ScrollView>
+
+      {/* NEW BATSMAN / BOWLER INFO CARD */}
+      {npCard && (
+        <Pressable style={styles.npOverlay} testID="np-info-card" onPress={() => setNpCard(null)}>
+          <View style={styles.npCard} onStartShouldSetResponder={() => true}>
+            <Text style={styles.npTag}>NEW {npCard.kind === "batsman" ? "BATTER" : "BOWLER"}</Text>
+            <View style={styles.npAvatar}>
+              {npCard.player?.profile_picture_path || npCard.player?.picture ?
+                <Image source={{ uri: npCard.player?.profile_picture_path ? pubImage(npCard.player.profile_picture_path) : npCard.player.picture }} style={styles.npAvatarImg} /> :
+                <Text style={styles.npAvatarText}>{npCard.player?.name?.[0]}</Text>}
+            </View>
+            <Text style={styles.npName}>{npCard.player?.name}</Text>
+            <Text style={styles.npStyle}>{npCard.kind === "batsman" ? (npCard.player?.batting_style || "Batter") : (npCard.player?.bowling_style || "Bowler")}</Text>
+            {npCard.stats ? (
+              npCard.kind === "batsman" ? (
+                <View style={styles.npStatsRow}>
+                  <View style={styles.npStatCol}><Text style={styles.npStatLbl}>Matches</Text><Text style={styles.npStatVal}>{npCard.stats.matches}</Text></View>
+                  <View style={styles.npStatCol}><Text style={styles.npStatLbl}>Runs</Text><Text style={styles.npStatVal}>{npCard.stats.batting.runs}</Text></View>
+                  <View style={styles.npStatCol}><Text style={styles.npStatLbl}>Best</Text><Text style={styles.npStatVal}>{npCard.stats.batting.highest}</Text></View>
+                  <View style={styles.npStatCol}><Text style={styles.npStatLbl}>Avg</Text><Text style={styles.npStatVal}>{Number(npCard.stats.batting.average || 0).toFixed(1)}</Text></View>
+                  <View style={styles.npStatCol}><Text style={styles.npStatLbl}>SR</Text><Text style={styles.npStatVal}>{Number(npCard.stats.batting.strike_rate || 0).toFixed(1)}</Text></View>
+                </View>
+              ) : (
+                <View style={styles.npStatsRow}>
+                  <View style={styles.npStatCol}><Text style={styles.npStatLbl}>Matches</Text><Text style={styles.npStatVal}>{npCard.stats.matches}</Text></View>
+                  <View style={styles.npStatCol}><Text style={styles.npStatLbl}>Wkts</Text><Text style={styles.npStatVal}>{npCard.stats.bowling.wickets}</Text></View>
+                  <View style={styles.npStatCol}><Text style={styles.npStatLbl}>Best</Text><Text style={styles.npStatVal}>{npCard.stats.bowling.best || "-"}</Text></View>
+                  <View style={styles.npStatCol}><Text style={styles.npStatLbl}>Econ</Text><Text style={styles.npStatVal}>{Number(npCard.stats.bowling.economy || 0).toFixed(1)}</Text></View>
+                </View>
+              )
+            ) : (
+              <Text style={[styles.hint, { marginTop: 12 }]}>{npCard.player?.user_id ? "Loading career stats…" : "Guest player"}</Text>
+            )}
+          </View>
+        </Pressable>
+      )}
+
+      {/* CELEBRATION OVERLAY (auto-dismiss ~1.8s) */}
+      {celeb && (
+        <View style={styles.celebOverlay} pointerEvents="none" testID={`celeb-${celeb}`}>
+          <Animated.View style={[
+            styles.celebBadge,
+            celeb === "four" ? styles.celebFour : celeb === "six" ? styles.celebSix : styles.celebWicket,
+            { transform: [{ scale: celebAnim }, { rotate: celebAnim.interpolate({ inputRange: [0, 1], outputRange: ["-10deg", "0deg"] }) }] },
+          ]}>
+            <Text style={styles.celebBig}>{celeb === "four" ? "4" : celeb === "six" ? "6" : "W"}</Text>
+            <Text style={styles.celebSmall}>{celeb === "four" ? "FOUR!" : celeb === "six" ? "SIX!" : "WICKET!"}</Text>
+          </Animated.View>
+        </View>
+      )}
     </View>
   );
 }

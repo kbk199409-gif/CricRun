@@ -79,7 +79,9 @@ export default function Scorecard() {
     return <View style={[styles.root, { alignItems: "center", justifyContent: "center", paddingTop: insets.top }]}><ActivityIndicator color={colors.brandPrimary} /></View>;
   }
 
-  const battersList = (batTeam.players || []).filter((p: any) => (inn.batters?.[p.player_id] || inn.batted_ids?.includes(p.player_id)));
+  const battersList = (inn.batted_ids || [])
+    .map((pid: string) => (batTeam.players || []).find((p: any) => p.player_id === pid))
+    .filter(Boolean);
   const bowlersList = (bowlTeam.players || []).filter((p: any) => inn.bowlers?.[p.player_id]);
   const currStriker = inn.striker_id;
   const currNonStriker = inn.non_striker_id;
@@ -132,7 +134,67 @@ export default function Scorecard() {
             return <Text style={styles.tossLine}>Extras: {extras}</Text>;
           })()}
           {!!tossLine && <Text style={styles.tossLine} testID="toss-line">{tossLine}</Text>}
+          {(() => {
+            const capId = tab === "a" ? match.captain_a_id : match.captain_b_id;
+            const cap = capId ? (batTeam.players || []).find((p: any) => p.player_id === capId) : null;
+            return cap ? <Text style={styles.tossLine} testID="captain-line">© Captain: {cap.name}</Text> : null;
+          })()}
         </View>
+
+        {/* AWARDS — visible on completed match, both innings tabs */}
+        {match.status === "completed" && (match.best_batter_id || match.best_bowler_id || match.man_of_the_match_id) && (
+          <View>
+            <Text style={styles.sectionHead}>Awards</Text>
+            {match.man_of_the_match_id && (() => {
+              const all = [...(teamA?.players || []), ...(teamB?.players || [])];
+              const p = all.find((x: any) => x.player_id === match.man_of_the_match_id);
+              const pic = p?.profile_picture_path ? fileUrl(p.profile_picture_path, token) : p?.picture;
+              return (
+                <View style={styles.row}>
+                  <View style={[styles.colBat, styles.batTop]}>
+                    <View style={[styles.batAvatar, { backgroundColor: "#FBBF2440" }]}>{pic ? <Image source={{ uri: pic, headers: token ? { Authorization: `Bearer ${token}` } : undefined }} style={styles.batAvatarImg} /> : <Text style={styles.batAvatarText}>{p?.name?.[0]}</Text>}</View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.batName}>🏅 {p?.name} · Man of the Match</Text>
+                      {match.man_of_the_match_summary && <Text style={styles.outTag}>{match.man_of_the_match_summary}</Text>}
+                    </View>
+                  </View>
+                </View>
+              );
+            })()}
+            {match.best_batter_id && (() => {
+              const all = [...(teamA?.players || []), ...(teamB?.players || [])];
+              const p = all.find((x: any) => x.player_id === match.best_batter_id);
+              const pic = p?.profile_picture_path ? fileUrl(p.profile_picture_path, token) : p?.picture;
+              return (
+                <View style={styles.row}>
+                  <View style={[styles.colBat, styles.batTop]}>
+                    <View style={styles.batAvatar}>{pic ? <Image source={{ uri: pic, headers: token ? { Authorization: `Bearer ${token}` } : undefined }} style={styles.batAvatarImg} /> : <Text style={styles.batAvatarText}>{p?.name?.[0]}</Text>}</View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.batName}>🏏 {p?.name} · Best Batter</Text>
+                      {match.best_batter_summary && <Text style={styles.outTag}>{match.best_batter_summary}</Text>}
+                    </View>
+                  </View>
+                </View>
+              );
+            })()}
+            {match.best_bowler_id && (() => {
+              const all = [...(teamA?.players || []), ...(teamB?.players || [])];
+              const p = all.find((x: any) => x.player_id === match.best_bowler_id);
+              const pic = p?.profile_picture_path ? fileUrl(p.profile_picture_path, token) : p?.picture;
+              return (
+                <View style={styles.row}>
+                  <View style={[styles.colBat, styles.batTop]}>
+                    <View style={[styles.batAvatar, { backgroundColor: "#EF444440" }]}>{pic ? <Image source={{ uri: pic, headers: token ? { Authorization: `Bearer ${token}` } : undefined }} style={styles.batAvatarImg} /> : <Text style={styles.batAvatarText}>{p?.name?.[0]}</Text>}</View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.batName}>🎯 {p?.name} · Best Bowler</Text>
+                      {match.best_bowler_summary && <Text style={styles.outTag}>{match.best_bowler_summary}</Text>}
+                    </View>
+                  </View>
+                </View>
+              );
+            })()}
+          </View>
+        )}
 
         <View style={styles.tableHead}>
           <Text style={[styles.headText, styles.colBat]}>Batter</Text>

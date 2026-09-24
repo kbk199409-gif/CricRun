@@ -32,24 +32,27 @@ export default function SearchTab() {
   const router = useRouter();
   const { apiFetch, token } = useAuth();
   const [q, setQ] = useState("");
-  const [results, setResults] = useState<{ users: any[]; matches: any[]; tournaments: any[] }>({ users: [], matches: [], tournaments: [] });
+  const [results, setResults] = useState<{ users: any[]; teams: any[]; matches: any[]; tournaments: any[] }>({ users: [], teams: [], matches: [], tournaments: [] });
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (q.trim().length < 2) { setResults({ users: [], matches: [], tournaments: [] }); return; }
+    if (q.trim().length < 2) { setResults({ users: [], teams: [], matches: [], tournaments: [] }); return; }
     let cancelled = false;
     const t = setTimeout(async () => {
       setLoading(true);
       try {
         const r = await apiFetch(`/api/search?q=${encodeURIComponent(q.trim())}`);
-        if (r.ok && !cancelled) setResults(await r.json());
+        if (r.ok && !cancelled) {
+          const d = await r.json();
+          setResults({ users: d.users || [], teams: d.teams || [], matches: d.matches || [], tournaments: d.tournaments || [] });
+        }
       } catch {}
       if (!cancelled) setLoading(false);
     }, 300);
     return () => { cancelled = true; clearTimeout(t); };
   }, [q, apiFetch]);
 
-  const total = results.users.length + results.matches.length + results.tournaments.length;
+  const total = results.users.length + results.teams.length + results.matches.length + results.tournaments.length;
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]} testID="search-tab">
@@ -74,7 +77,7 @@ export default function SearchTab() {
         {q.trim().length >= 2 && total === 0 && !loading && (
           <View style={styles.empty}>
             <Ionicons name="search-outline" size={44} color={colors.muted} />
-            <Text style={styles.emptyText}>No results for "{q}"</Text>
+            <Text style={styles.emptyText}>No results for &ldquo;{q}&rdquo;</Text>
           </View>
         )}
 
@@ -86,16 +89,28 @@ export default function SearchTab() {
               <View style={styles.avatar}>{pic ? <Image source={{ uri: pic, headers: token ? { Authorization: `Bearer ${token}` } : undefined }} style={styles.avatarImg} /> : <Text style={styles.avatarText}>{u.name?.[0]}</Text>}</View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.name}>{u.name}</Text>
-                <Text style={styles.meta}>{u.phone || u.email || ""}</Text>
+                <Text style={styles.meta}>{u.batting_style || u.bowling_style || "Player"}</Text>
               </View>
               <Ionicons name="chevron-forward" size={18} color={colors.muted} />
             </Pressable>
           );
         })}
 
+        {results.teams.length > 0 && <Text style={styles.sectionHead}>Teams</Text>}
+        {results.teams.map((t) => (
+          <Pressable key={t.team_id} testID={`sr-team-${t.team_id}`} style={styles.card} onPress={() => router.push(`/teams/${t.team_id}`)}>
+            <View style={styles.logo}><Text style={styles.logoText}>{t.short_name || t.name?.slice(0, 3).toUpperCase()}</Text></View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.name}>{t.name}</Text>
+              <Text style={styles.meta}>Tap to see squad, live & past matches</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+          </Pressable>
+        ))}
+
         {results.matches.length > 0 && <Text style={styles.sectionHead}>Matches</Text>}
         {results.matches.map((m) => (
-          <Pressable key={m.match_id} testID={`sr-match-${m.match_id}`} style={styles.card} onPress={() => router.push(`/matches/${m.match_id}`)}>
+          <Pressable key={m.match_id} testID={`sr-match-${m.match_id}`} style={styles.card} onPress={() => router.push(m.share_token ? `/share/${m.share_token}` : `/matches/${m.match_id}`)}>
             <View style={styles.logo}><Text style={styles.logoText}>{m.team_a_short}v{m.team_b_short}</Text></View>
             <View style={{ flex: 1 }}>
               <Text style={styles.name}>{m.team_a_name} vs {m.team_b_name}</Text>
