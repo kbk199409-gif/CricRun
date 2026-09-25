@@ -932,15 +932,36 @@ export default function LiveMatch() {
             <Text style={styles.infoTag}>WHO IS ON STRIKE?</Text>
             <Text style={styles.infoStyle}>Pick who faces the next ball.</Text>
             <View style={{ height: 12 }} />
-            <View style={{ width: "100%", flexDirection: "row", gap: 10 }}>
-              <Pressable testID="strike-new" style={[styles.segBtn, newBatsmanOnStrike === true && styles.segBtnActive]} onPress={() => setNewBatsmanOnStrike(true)}>
-                <Text style={styles.segText}>New Batter{"\n"}(on strike)</Text>
-              </Pressable>
-              <Pressable testID="strike-existing" style={[styles.segBtn, newBatsmanOnStrike === false && styles.segBtnActive]} onPress={() => setNewBatsmanOnStrike(false)}>
-                <Text style={styles.segText}>{playerName(curInn.striker_id || curInn.non_striker_id) || "Existing"}{"\n"}(stays on strike)</Text>
-              </Pressable>
-            </View>
-            <Pressable style={[styles.modalBtn, { alignSelf: "stretch", marginTop: 14 }]} onPress={() => setShowStrikePick(false)} disabled={newBatsmanOnStrike === null}>
+            {(() => {
+              // The two batters currently in the middle after the run-out:
+              // - "surviving" = whichever of striker_id / non_striker_id is still set
+              // - "incoming" = the just-picked new batsman (batsmanForNextBall)
+              const survivingId = curInn.striker_id || curInn.non_striker_id || null;
+              const surviving = playerObj(survivingId);
+              const incoming = playerObj(batsmanForNextBall);
+              const survivingPic = surviving?.profile_picture_path ? fileUrl(surviving.profile_picture_path, token) : surviving?.picture;
+              const incomingPic = incoming?.profile_picture_path ? fileUrl(incoming.profile_picture_path, token) : incoming?.picture;
+              // Semantics: setting newBatsmanOnStrike=true means the incoming batter faces next ball.
+              return (
+                <View style={{ width: "100%", flexDirection: "row", gap: 10 }}>
+                  <Pressable testID="strike-surviving" style={[styles.segBtn, newBatsmanOnStrike === false && styles.segBtnActive]} onPress={() => setNewBatsmanOnStrike(false)}>
+                    <View style={styles.modalAvatar}>{survivingPic ? <Image source={{ uri: survivingPic, headers: token ? { Authorization: `Bearer ${token}` } : undefined }} style={styles.modalAvatarImg} /> : <Text style={styles.modalAvatarText}>{surviving?.name?.[0] || "?"}</Text>}</View>
+                    <View>
+                      <Text style={styles.segText}>{surviving?.name || "Batter 1"}</Text>
+                      <Text style={{ color: colors.muted, fontSize: 11 }}>Faces next ball</Text>
+                    </View>
+                  </Pressable>
+                  <Pressable testID="strike-incoming" style={[styles.segBtn, newBatsmanOnStrike === true && styles.segBtnActive]} onPress={() => setNewBatsmanOnStrike(true)}>
+                    <View style={styles.modalAvatar}>{incomingPic ? <Image source={{ uri: incomingPic, headers: token ? { Authorization: `Bearer ${token}` } : undefined }} style={styles.modalAvatarImg} /> : <Text style={styles.modalAvatarText}>{incoming?.name?.[0] || "?"}</Text>}</View>
+                    <View>
+                      <Text style={styles.segText}>{incoming?.name || "Batter 2"}</Text>
+                      <Text style={{ color: colors.muted, fontSize: 11 }}>Faces next ball</Text>
+                    </View>
+                  </Pressable>
+                </View>
+              );
+            })()}
+            <Pressable style={[styles.modalBtn, { alignSelf: "stretch", marginTop: 14 }]} testID="confirm-strike-btn" onPress={() => setShowStrikePick(false)} disabled={newBatsmanOnStrike === null}>
               <Text style={styles.modalBtnText}>Confirm</Text>
             </Pressable>
           </View>
