@@ -200,6 +200,7 @@ export default function LiveMatch() {
   const [showStrikePick, setShowStrikePick] = useState(false);
   const [newBatsmanOnStrike, setNewBatsmanOnStrike] = useState<boolean | null>(null);
   const [wasRunOut, setWasRunOut] = useState(false);
+  const [runOutDismissedName, setRunOutDismissedName] = useState<string>("");
   // Run-out completed-runs picker (v6.1 – run-out enhancement)
   const [showRunOutRuns, setShowRunOutRuns] = useState(false);
   const [roRuns, setRoRuns] = useState<number>(0);
@@ -340,6 +341,11 @@ export default function LiveMatch() {
     if (!curInn) return;
     if (curInn.needs_new_batsman && !batsmanForNextBall) { crossAlert("Select the new batsman first."); return; }
     if (curInn.needs_new_bowler && !bowlerForNextBall) { crossAlert("Select the next bowler first."); return; }
+    // HARD GUARD: after a run-out, the scorer MUST pick a striker before scoring the next ball.
+    if (wasRunOut && batsmanForNextBall && newBatsmanOnStrike === null) {
+      setShowStrikePick(true);
+      return;
+    }
     sendBall({ runs: n, extra_type: extra, wicket: false });
   };
 
@@ -347,6 +353,11 @@ export default function LiveMatch() {
     if (!curInn) return;
     if (extra === "no_ball") { crossAlert("Wicket cannot be recorded on a no-ball"); return; }
     if (curInn.needs_new_bowler && !bowlerForNextBall) { crossAlert("Select the next bowler first."); return; }
+    // HARD GUARD: same rule for the wicket button — must resolve strike first.
+    if (wasRunOut && batsmanForNextBall && newBatsmanOnStrike === null) {
+      setShowStrikePick(true);
+      return;
+    }
     setPendingWicket({ out_type: "", runs: 0 });
     setShowWicketType(true);
   };
@@ -361,7 +372,15 @@ export default function LiveMatch() {
     if (opts?.fielder_id) body.fielder_id = opts.fielder_id;
     if (opts?.out_batsman_id) body.out_batsman_id = opts.out_batsman_id;
     else if (pendingWicket?.out_batsman_id) body.out_batsman_id = pendingWicket.out_batsman_id;
-    if (isRunOut) setWasRunOut(true); else setWasRunOut(false);
+    if (isRunOut) {
+      setWasRunOut(true);
+      // Snapshot dismissed batter name for the strike-pick prompt
+      const dpid = opts?.out_batsman_id || pendingWicket?.out_batsman_id;
+      const dp = dpid ? [...(batTeam?.players || []), ...(bowlTeam?.players || [])].find((x: any) => x.player_id === dpid) : null;
+      setRunOutDismissedName(dp?.name || "");
+    } else {
+      setWasRunOut(false);
+    }
     sendBall(body);
     setPendingWicket(null); setPickedFielder(""); setShowFielder(false); setShowWicketType(false); setShowWhoOut(false); setShowRunOutRuns(false);
     setRoRuns(0); setRoExtra("none");
@@ -614,7 +633,10 @@ export default function LiveMatch() {
                 <Ionicons name="arrow-undo" size={16} color={colors.onSurface} />
                 <Text style={styles.undoText}>UNDO</Text>
               </Pressable>
-              <Pressable testID="swap-btn" style={styles.swapBtn} onPress={() => sendBall({ runs: 0, extra_type: "none", wicket: false, swap_strike: true })} disabled={saving}>
+              <Pressable testID="swap-btn" style={styles.swapBtn} onPress={() => {
+                if (wasRunOut && batsmanForNextBall && newBatsmanOnStrike === null) { setShowStrikePick(true); return; }
+                sendBall({ runs: 0, extra_type: "none", wicket: false, swap_strike: true });
+              }} disabled={saving}>
                 <Ionicons name="swap-horizontal" size={20} color={colors.onSurface} />
               </Pressable>
             </View>
@@ -707,12 +729,15 @@ export default function LiveMatch() {
           <Pressable testID="confirm-batsman-btn" style={styles.modalBtn} onPress={() => {
             setBatsmanForNextBall(pickedBatsman);
             setShowNewBatsman(false);
-            // Auto-open the info card
-            const p = availableBatsmen.find((x: any) => x.player_id === pickedBatsman);
-            if (p) showPlayerCard(p, "batsman");
+            // Auto-open the info card (skip if a run-out strike selection is coming up so it isn't buried)
+            if (!wasRunOut) {
+              const p = availableBatsmen.find((x: any) => x.player_id === pickedBatsman);
+              if (p) showPlayerCard(p, "batsman");
+            }
             setPickedBatsman("");
             if (wasRunOut) {
-              // Ask who's on strike
+              // Ask who's on strike — this is REQUIRED before any next-ball action
+              setNewBatsmanOnStrike(null);
               setShowStrikePick(true);
             }
           }} disabled={!pickedBatsman}>
@@ -925,44 +950,44 @@ export default function LiveMatch() {
         </View>
       </Modal>
 
-      {/* Who's on strike? — for run-out new batsman */}
-      <Modal visible={showStrikePick} animationType="fade" transparent onRequestClose={() => setShowStrikePick(false)}>
+      {/* Who's on strike? — for run-out new batsman (mandatory step) */}
+      <Modal visible={showStrikePick} animationType="fade" transparent onRequestClose={() => { /* required — cannot dismiss without picking */ }}>
         <View style={styles.infoOverlay}>
           <View style={styles.infoCard}>
-            <Text style={styles.infoTag}>WHO IS ON STRIKE?</Text>
-            <Text style={styles.infoStyle}>Pick who faces the next ball.</Text>
+            <Text style={[styles.infoTag, { color: colors.error }]}>RUN OUT!</Text>
+            {runOutDismissedName ? <Text style={styles.infoStyle}>Dismissed: <Text style={{ color: colors.onSurface, fontWeight: "800" }}>{runOutDismissedName}</Text></Text> : null}
+            <Text style={[styles.infoName, { fontSize: 16 }]}>Who will be on strike for the next ball?</Text>
+            <Text style={[styles.infoStyle, { fontSize: 11 }]}>Required — please pick one to continue scoring</Text>
             <View style={{ height: 12 }} />
             {(() => {
               // The two batters currently in the middle after the run-out:
-              // - "surviving" = whichever of striker_id / non_striker_id is still set
-              // - "incoming" = the just-picked new batsman (batsmanForNextBall)
               const survivingId = curInn.striker_id || curInn.non_striker_id || null;
               const surviving = playerObj(survivingId);
               const incoming = playerObj(batsmanForNextBall);
               const survivingPic = surviving?.profile_picture_path ? fileUrl(surviving.profile_picture_path, token) : surviving?.picture;
               const incomingPic = incoming?.profile_picture_path ? fileUrl(incoming.profile_picture_path, token) : incoming?.picture;
-              // Semantics: setting newBatsmanOnStrike=true means the incoming batter faces next ball.
+              // Semantics: newBatsmanOnStrike=true → incoming batter faces the next ball.
               return (
                 <View style={{ width: "100%", flexDirection: "row", gap: 10 }}>
                   <Pressable testID="strike-surviving" style={[styles.segBtn, newBatsmanOnStrike === false && styles.segBtnActive]} onPress={() => setNewBatsmanOnStrike(false)}>
                     <View style={styles.modalAvatar}>{survivingPic ? <Image source={{ uri: survivingPic, headers: token ? { Authorization: `Bearer ${token}` } : undefined }} style={styles.modalAvatarImg} /> : <Text style={styles.modalAvatarText}>{surviving?.name?.[0] || "?"}</Text>}</View>
                     <View>
                       <Text style={styles.segText}>{surviving?.name || "Batter 1"}</Text>
-                      <Text style={{ color: colors.muted, fontSize: 11 }}>Faces next ball</Text>
+                      <Text style={{ color: colors.muted, fontSize: 11 }}>On strike</Text>
                     </View>
                   </Pressable>
                   <Pressable testID="strike-incoming" style={[styles.segBtn, newBatsmanOnStrike === true && styles.segBtnActive]} onPress={() => setNewBatsmanOnStrike(true)}>
                     <View style={styles.modalAvatar}>{incomingPic ? <Image source={{ uri: incomingPic, headers: token ? { Authorization: `Bearer ${token}` } : undefined }} style={styles.modalAvatarImg} /> : <Text style={styles.modalAvatarText}>{incoming?.name?.[0] || "?"}</Text>}</View>
                     <View>
                       <Text style={styles.segText}>{incoming?.name || "Batter 2"}</Text>
-                      <Text style={{ color: colors.muted, fontSize: 11 }}>Faces next ball</Text>
+                      <Text style={{ color: colors.muted, fontSize: 11 }}>On strike</Text>
                     </View>
                   </Pressable>
                 </View>
               );
             })()}
-            <Pressable style={[styles.modalBtn, { alignSelf: "stretch", marginTop: 14 }]} testID="confirm-strike-btn" onPress={() => setShowStrikePick(false)} disabled={newBatsmanOnStrike === null}>
-              <Text style={styles.modalBtnText}>Confirm</Text>
+            <Pressable style={[styles.modalBtn, { alignSelf: "stretch", marginTop: 14, opacity: newBatsmanOnStrike === null ? 0.4 : 1 }]} testID="confirm-strike-btn" onPress={() => setShowStrikePick(false)} disabled={newBatsmanOnStrike === null}>
+              <Text style={styles.modalBtnText}>Confirm Striker</Text>
             </Pressable>
           </View>
         </View>
