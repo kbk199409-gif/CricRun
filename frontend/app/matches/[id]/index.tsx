@@ -194,12 +194,16 @@ export default function LiveMatch() {
   const [showWicketType, setShowWicketType] = useState(false);
   const [showFielder, setShowFielder] = useState(false);
   const [showWhoOut, setShowWhoOut] = useState(false);
-  const [pendingWicket, setPendingWicket] = useState<{ out_type: string; runs: number; out_batsman_id?: string; fielder_id?: string } | null>(null);
+  const [pendingWicket, setPendingWicket] = useState<{ out_type: string; runs: number; out_batsman_id?: string; fielder_id?: string; extraType?: "none" | "bye" | "leg_bye" } | null>(null);
   const [pickedFielder, setPickedFielder] = useState<string>("");
   // Strike-position picker (after run-out new batsman)
   const [showStrikePick, setShowStrikePick] = useState(false);
   const [newBatsmanOnStrike, setNewBatsmanOnStrike] = useState<boolean | null>(null);
   const [wasRunOut, setWasRunOut] = useState(false);
+  // Run-out completed-runs picker (v6.1 – run-out enhancement)
+  const [showRunOutRuns, setShowRunOutRuns] = useState(false);
+  const [roRuns, setRoRuns] = useState<number>(0);
+  const [roExtra, setRoExtra] = useState<"none" | "bye" | "leg_bye">("none");
   // Info card overlay (auto-show when new batsman/bowler enters)
   const [infoCard, setInfoCard] = useState<{ kind: "batsman" | "bowler"; player: any; stats: any | null } | null>(null);
   const [seenBatEntries, setSeenBatEntries] = useState<Record<string, boolean>>({});
@@ -348,20 +352,26 @@ export default function LiveMatch() {
   };
 
   const submitWicketWith = (out_type: string, opts?: { fielder_id?: string; out_batsman_id?: string }) => {
-    const runs = pendingWicket?.runs ?? 0;
-    const body: any = { runs, extra_type: extra, wicket: true, out_type };
+    // For run-outs we honour pendingWicket.runs & pendingWicket.extraType (set by the run-out details modal).
+    // For any other dismissal we keep the legacy behaviour (0 runs, current `extra` state).
+    const isRunOut = out_type === "run_out";
+    const runs = isRunOut ? (pendingWicket?.runs ?? 0) : (pendingWicket?.runs ?? 0);
+    const extraType = isRunOut ? (pendingWicket?.extraType || "none") : extra;
+    const body: any = { runs, extra_type: extraType, wicket: true, out_type };
     if (opts?.fielder_id) body.fielder_id = opts.fielder_id;
     if (opts?.out_batsman_id) body.out_batsman_id = opts.out_batsman_id;
     else if (pendingWicket?.out_batsman_id) body.out_batsman_id = pendingWicket.out_batsman_id;
-    if (out_type === "run_out") setWasRunOut(true); else setWasRunOut(false);
+    if (isRunOut) setWasRunOut(true); else setWasRunOut(false);
     sendBall(body);
-    setPendingWicket(null); setPickedFielder(""); setShowFielder(false); setShowWicketType(false); setShowWhoOut(false);
+    setPendingWicket(null); setPickedFielder(""); setShowFielder(false); setShowWicketType(false); setShowWhoOut(false); setShowRunOutRuns(false);
+    setRoRuns(0); setRoExtra("none");
   };
 
   const onPickOutType = (out_type: string) => {
     if (out_type === "run_out") {
       // Run-out: ask WHO GOT OUT first (striker or non-striker)
-      setPendingWicket({ out_type: "run_out", runs: 0 });
+      setPendingWicket({ out_type: "run_out", runs: 0, extraType: "none" });
+      setRoRuns(0); setRoExtra("none");
       setShowWicketType(false);
       setShowWhoOut(true);
       return;
@@ -865,7 +875,51 @@ export default function LiveMatch() {
               </Pressable>
             ))}
           </View>
-          <Pressable style={styles.modalBtn} testID="confirm-whoout-btn" onPress={() => { setShowWhoOut(false); setShowFielder(true); }} disabled={!pendingWicket?.out_batsman_id}>
+          <Pressable style={styles.modalBtn} testID="confirm-whoout-btn" onPress={() => { setShowWhoOut(false); setShowRunOutRuns(true); }} disabled={!pendingWicket?.out_batsman_id}>
+            <Text style={styles.modalBtnText}>Next: runs completed</Text>
+          </Pressable>
+        </View>
+      </Modal>
+
+      {/* Run-out completed runs & extra type */}
+      <Modal visible={showRunOutRuns} animationType="slide" onRequestClose={() => setShowRunOutRuns(false)} transparent={false}>
+        <View style={[styles.modal, { paddingTop: insets.top }]} testID="runout-runs-modal">
+          <View style={styles.modalHead}>
+            <Pressable style={styles.hbtn} onPress={() => { setShowRunOutRuns(false); setShowWhoOut(true); }}><Ionicons name="chevron-back" size={24} color={colors.onSurface} /></Pressable>
+            <Text style={styles.modalTitle}>Runs completed?</Text>
+            <View style={{ width: 32 }} />
+          </View>
+          <Text style={[styles.modalSub, { paddingTop: 12 }]}>How many runs did the batters complete BEFORE the run out?</Text>
+          <View style={[styles.runsGrid, { paddingHorizontal: 12 }]}>
+            {[0, 1, 2, 3, 4, 5].map((n) => (
+              <Pressable key={n} testID={`ro-runs-${n}`} style={[styles.runBtn, roRuns === n && styles.runBtnPrimary]} onPress={() => setRoRuns(n)}>
+                <Text style={[styles.runText, roRuns === n && styles.runTextInv]}>{n}</Text>
+                <Text style={[styles.runLbl, roRuns === n && styles.runLblInv]}>{n === 0 ? "NO RUN" : n === 1 ? "SINGLE" : `${n} RUNS`}</Text>
+              </Pressable>
+            ))}
+          </View>
+          <Text style={[styles.modalSub, { paddingTop: 6 }]}>How were the runs scored?</Text>
+          <View style={[styles.extrasRow, { flexWrap: "wrap" }]}>
+            {([
+              { key: "none", label: "OFF BAT" },
+              { key: "bye", label: "BYE" },
+              { key: "leg_bye", label: "LEG BYE" },
+            ] as const).map((opt) => (
+              <Pressable key={opt.key} testID={`ro-type-${opt.key}`} style={[styles.extraChip, roExtra === opt.key && styles.extraChipActive]} onPress={() => setRoExtra(opt.key)}>
+                <Text style={[styles.extraText, roExtra === opt.key && styles.extraTextActive]}>{opt.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+          <Text style={[styles.modalSub, { fontSize: 11, paddingTop: 0 }]}>
+            {roExtra === "none" ? "Off bat: team runs + batter runs both increase." :
+             roExtra === "bye" ? "Bye: only team runs increase (not credited to batter or bowler)." :
+             "Leg bye: only team runs increase (not credited to batter or bowler)."}
+          </Text>
+          <Pressable style={styles.modalBtn} testID="confirm-runout-runs" onPress={() => {
+            setPendingWicket((pw) => pw ? { ...pw, runs: roRuns, extraType: roExtra } : pw);
+            setShowRunOutRuns(false);
+            setShowFielder(true);
+          }}>
             <Text style={styles.modalBtnText}>Next: pick fielder</Text>
           </Pressable>
         </View>
