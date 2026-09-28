@@ -940,7 +940,10 @@ def _apply_ball_effects(innings: dict, ball: dict) -> None:
     if striker_id and extra != "wide":
         bat = _ensure_batter(innings, striker_id)
         bat["balls"] += 1
-        if extra == "none":
+        # Off-bat runs credit the batter: this applies to legal balls (extra == "none")
+        # AND to no-balls (extra == "no_ball") where `runs` is the off-bat portion.
+        # Byes / leg-byes do NOT credit the batter.
+        if extra == "none" or extra == "no_ball":
             bat["runs"] += runs
             if runs == 4: bat["fours"] += 1
             elif runs == 6: bat["sixes"] += 1
@@ -953,9 +956,14 @@ def _apply_ball_effects(innings: dict, ball: dict) -> None:
         # Runs charged to bowler: off bat, wide, no-ball (NOT byes/leg-byes)
         if extra == "none":
             bw["runs"] += runs
-        elif extra in ("wide", "no_ball"):
+        elif extra == "wide":
             bw["runs"] += team_runs
             bw["extras"] += team_runs
+        elif extra == "no_ball":
+            # Bowler is charged the full team_runs (penalty + off-bat) BUT only the 1-run
+            # penalty is booked as "extras". Off-bat runs are batter runs, not extras.
+            bw["runs"] += team_runs
+            bw["extras"] += 1
 
     # Wicket
     if ball.get("wicket"):

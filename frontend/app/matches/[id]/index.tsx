@@ -260,6 +260,24 @@ export default function LiveMatch() {
     }
   }, [match?.status, curInn?.completed]);
 
+  // If we land on the screen with a pending run-out (e.g. page refresh mid-flow),
+  // rehydrate `wasRunOut` and the dismissed name from the last event so the strike
+  // picker fires as soon as the scorer chooses the new batsman.
+  useEffect(() => {
+    if (!curInn) return;
+    const evs = curInn.events || [];
+    const last = evs.length ? evs[evs.length - 1] : null;
+    const isPendingRunOut = !!(curInn.needs_new_batsman && last?.wicket && last?.out_type === "run_out");
+    if (isPendingRunOut && !wasRunOut) {
+      setWasRunOut(true);
+      if (last?.out_batsman_id) {
+        const all = [...(batTeam?.players || []), ...(bowlTeam?.players || [])];
+        const dp = all.find((x: any) => x.player_id === last.out_batsman_id);
+        setRunOutDismissedName(dp?.name || "");
+      }
+    }
+  }, [curInn?.needs_new_batsman, curInn?.events?.length, batTeam, bowlTeam, wasRunOut]);
+
   const openPlayerProfile = useCallback((pid: string | null) => {
     if (!pid) return;
     const all = [...(batTeam?.players || []), ...(bowlTeam?.players || [])];
@@ -297,7 +315,15 @@ export default function LiveMatch() {
       });
       if (r.ok) {
         setBatsmanForNextBall(""); setBowlerForNextBall(""); setExtra("none");
-        setNewBatsmanOnStrike(null); setWasRunOut(false);
+        // If THIS ball was the run-out itself, preserve wasRunOut so the required strike-picker
+        // fires after the scorer chooses the new batsman on the very next screen. Reset it only
+        // once a subsequent ball has been recorded (i.e. the strike-selection has been applied).
+        const isRunOutBall = !!(body?.wicket && body?.out_type === "run_out");
+        if (isRunOutBall) {
+          setNewBatsmanOnStrike(null); // keep null so scoring is blocked until scorer picks
+        } else {
+          setNewBatsmanOnStrike(null); setWasRunOut(false); setRunOutDismissedName("");
+        }
         await load();
       } else {
         const j = await r.json().catch(() => ({}));
